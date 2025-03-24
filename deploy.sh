@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -e # Прерывать выполнение при любой ошибке
+
 echo "🔄 Начало процесса деплоя бота..."
 
 # Проверка прав администратора
@@ -41,8 +43,8 @@ echo "📦 Установка системных зависимостей..."
 case $OS in
     ubuntu|debian)
         apt-get install -y wget unzip xvfb libnss3 libnspr4 \
-        libgconf-2-4 libfontconfig1 libxss1 libappindicator3-1 \
-        libindicator7 gdebi-core
+        libgconf2-4 libxss1 libappindicator3-1 libindicator7 \
+        gdebi-core software-properties-common
         ;;
     centos|rhel|fedora)
         yum install -y wget unzip Xvfb nss libXScrnSaver \
@@ -56,7 +58,7 @@ if ! command -v google-chrome &> /dev/null; then
     case $OS in
         ubuntu|debian)
             wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-            gdebi -n google-chrome-stable_current_amd64.deb
+            dpkg -i google-chrome-stable_current_amd64.deb || apt-get install -fy
             rm google-chrome-stable_current_amd64.deb
             ;;
         centos|rhel|fedora)
@@ -85,7 +87,10 @@ cd "$(dirname "$0")"
 # Создание виртуального окружения
 if [ ! -d ".venv" ]; then
     echo "🛠️ Создание виртуального окружения..."
-    python3 -m venv .venv
+    python3 -m venv .venv --without-pip
+    source .venv/bin/activate
+    curl -sS https://bootstrap.pypa.io/get-pip.py | python3
+    deactivate
 fi
 
 # Остановка старого процесса
@@ -109,6 +114,6 @@ echo "🚀 Запуск бота..."
 nohup python3 -u bot/main.py > bot.log 2>&1 &
 echo $! > bot.pid
 
-echo "✅ Департамент успешно завершен!"
+echo "✅ Деплой успешно завершен!"
 echo "📝 Логи будут сохраняться в bot.log"
 echo "🆔 PID процесса: $(cat bot.pid)"
