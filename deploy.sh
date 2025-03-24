@@ -1,21 +1,31 @@
 #!/bin/bash
 set -e
 
-echo "🔄 Начало процесса деплоя бота (Ubuntu Server без GUI)..."
+# Режим автоматизации для needrestart
+export NEEDRESTART_MODE=a
+export DEBIAN_FRONTEND=noninteractive
 
-# Проверка прав администратора
+# Логирование всего вывода
+exec > >(tee -a deploy.log) 2>&1
+
+echo "🔄 Начало процесса деплоя ($(date))"
+
+# Проверка прав
 if [ "$EUID" -ne 0 ]; then
     echo "⚠️  Запустите скрипт с sudo!"
     exit 1
 fi
 
+# Обход проблем с needrestart
+sed -i "/#\$nrconf{restart} = 'i';/s/.*/\$nrconf{restart} = 'a';/" /etc/needrestart/needrestart.conf
+
 # Обновление системы
 echo "🔄 Обновление пакетов..."
 apt-get update
-apt-get upgrade -y
+apt-get -y full-upgrade
 
-# Установка базовых зависимостей
-echo "📦 Установка системных зависимостей..."
+# Установка зависимостей
+echo "📦 Установка системных пакетов..."
 apt-get install -y \
     python3 \
     python3-pip \
@@ -29,72 +39,62 @@ apt-get install -y \
     libxss1 \
     libxtst6 \
     libappindicator3-1 \
-    libsecret-1-0 \
     libgbm1 \
     libdrm2
 
-# Установка Google Chrome
+# Установка Chrome
 if ! command -v google-chrome &> /dev/null; then
     echo "🌐 Установка Chrome..."
     wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor > /usr/share/keyrings/googlechrome.gpg
     echo "deb [arch=amd64 signed-by=/usr/share/keyrings/googlechrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
     apt-get update
-    apt-get install -y google-chrome-stable --no-install-recommends
+    apt-get install -y google-chrome-stable
 fi
 
-# Установка Chromedriver (исправленная версия)
-if ! command -v chromedriver &> /dev/null; then
-    echo "🔧 Установка chromedriver..."
-
-    # Проверка доступности Chrome
-    if ! command -v google-chrome &> /dev/null; then
-        echo "❌ Chrome не установлен! Прерываю выполнение."
+# Установка chromedriver с улучшенным логированием
+install_chromedriver() {
+    echo "🔧 Начало установки chromedriver..."
+    echo "⚙️ Проверка доступа к Google API..."
+    if ! curl -sI https://chromedriver.storage.googleapis.com >/dev/null; then
+        echo "❌ Нет доступа к chromedriver.storage.googleapis.com!"
         exit 1
     fi
 
-    # Получение версии Chrome с обработкой ошибок
-    CHROME_VERSION=$(google-chrome --version 2>/dev/null | awk '{print $3}' | cut -d'.' -f1)
+    CHROME_VERSION=$(google-chrome --version 2>/dev/null | awk '{print $3}')
     if [ -z "$CHROME_VERSION" ]; then
         echo "❌ Не удалось определить версию Chrome!"
         exit 1
     fi
+    echo "✅ Версия Chrome: $CHROME_VERSION"
 
-    # Получение версии chromedriver
-    CHROMEDRIVER_VERSION=$(wget -qO- "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_VERSION")
+    CHROMEDRIVER_VERSION=$(wget -qO- "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$(echo $CHROME_VERSION | cut -d. -f1)")
     if [ -z "$CHROMEDRIVER_VERSION" ]; then
-        echo "❌ Не удалось получить версию chromedriver!"
+        echo "❌ Ошибка получения версии chromedriver!"
         exit 1
     fi
+    echo "⚙️ Совместимая версия chromedriver: $CHROMEDRIVER_VERSION"
 
-    echo "⚙️  Версия Chrome: $CHROME_VERSION"
-    echo "⚙️  Версия chromedriver: $CHROMEDRIVER_VERSION"
-
-    # Скачивание и распаковка
     echo "📥 Скачивание chromedriver..."
-    if ! wget --progress=bar:force "https://chromedriver.storage.googleapis.com/$CHROMEDRIVER_VERSION/chromedriver_linux64.zip"; then
+    if ! wget --tries=3 --timeout=30 -q "https://chromedriver.storage.googleapis.com/$CHROMEDRIVER_VERSION/chromedriver_linux64.zip"; then
         echo "❌ Ошибка скачивания chromedriver!"
         exit 1
     fi
 
     echo "📦 Распаковка архива..."
-    if ! unzip chromedriver_linux64.zip; then
-        echo "❌ Ошибка распаковки архива!"
-        rm chromedriver_linux64.zip
+    if ! unzip -o chromedriver_linux64.zip; then
+        echo "❌ Ошибка распаковки!"
+        rm -f chromedriver_linux64.zip
         exit 1
     fi
 
-    # Очистка и установка
-    rm chromedriver_linux64.zip
-    sudo mv chromedriver /usr/local/bin/
-    sudo chmod +x /usr/local/bin/chromedriver
+    rm -f chromedriver_linux64.zip
+    chmod +x chromedriver
+    mv chromedriver /usr/local/bin/
+    echo "✅ chromedriver установлен в /usr/local/bin/chromedriver"
+}
 
-    # Финальная проверка
-    if ! chromedriver --version; then
-        echo "❌ chromedriver не работает после установки!"
-        exit 1
-    fi
-
-    echo "✅ chromedriver успешно установлен"
+if ! command -v chromedriver &> /dev/null; then
+    install_chromedriver
 fi
 
 # Настройка Xvfb
