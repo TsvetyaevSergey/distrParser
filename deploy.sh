@@ -1,17 +1,16 @@
 #!/bin/bash
-
 set -e
 
 echo "🔄 Начало процесса деплоя бота (Ubuntu Server без GUI)..."
 
 # Проверка прав администратора
 if [ "$EUID" -ne 0 ]; then
-    echo "⚠️  Требуются права администратора! Запустите с sudo."
+    echo "⚠️  Запустите скрипт с sudo!"
     exit 1
 fi
 
 # Обновление системы
-echo "🔄 Обновление пакетов системы..."
+echo "🔄 Обновление пакетов..."
 apt-get update
 apt-get upgrade -y
 
@@ -25,19 +24,20 @@ apt-get install -y \
     unzip \
     xvfb \
     libnss3 \
-    libgconf-2-4 \
+    libasound2t64 \
     fonts-liberation \
-    libasound2 \
     libxss1 \
     libxtst6 \
     libappindicator3-1 \
-    libsecret-1-0
+    libsecret-1-0 \
+    libgbm1 \
+    libdrm2
 
-# Установка Google Chrome Headless
+# Установка Google Chrome
 if ! command -v google-chrome &> /dev/null; then
-    echo "🌐 Установка Chrome Headless..."
-    wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add -
-    echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
+    echo "🌐 Установка Chrome..."
+    wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor > /usr/share/keyrings/googlechrome.gpg
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/googlechrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
     apt-get update
     apt-get install -y google-chrome-stable --no-install-recommends
 fi
@@ -54,44 +54,42 @@ if ! command -v chromedriver &> /dev/null; then
     chmod +x /usr/local/bin/chromedriver
 fi
 
-# Настройка виртуального дисплея
-echo "🖥️  Настройка Xvfb..."
+# Настройка Xvfb
+echo "🖥️  Настройка виртуального дисплея..."
 if ! pgrep -x "Xvfb" > /dev/null; then
     Xvfb :99 -screen 0 1024x768x16 &> /tmp/xvfb.log &
-    export DISPLAY=:99
     echo "export DISPLAY=:99" >> /etc/profile
+    source /etc/profile
 fi
 
-# Переход в директорию проекта
+# Рабочая директория
 cd "$(dirname "$0")"
 
-# Создание виртуального окружения
+# Виртуальное окружение
 if [ ! -d ".venv" ]; then
     echo "🛠️ Создание виртуального окружения..."
     python3 -m venv .venv
 fi
 
-# Остановка старого процесса
+# Остановка предыдущего процесса
 if [ -f bot.pid ]; then
     OLD_PID=$(cat bot.pid)
     if ps -p $OLD_PID > /dev/null; then
-        echo "🛑 Остановка старого процесса с PID $OLD_PID..."
-        kill $OLD_PID && echo "✅ Старый процесс остановлен."
+        echo "🛑 Остановка процесса $OLD_PID..."
+        kill $OLD_PID
     fi
     rm bot.pid
 fi
 
-# Установка зависимостей Python
-echo "📦 Обновление зависимостей Python..."
+# Установка зависимостей
+echo "📦 Установка Python-зависимостей..."
 source .venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# Запуск бота с headless-режимом
-echo "🚀 Запуск бота в headless-режиме..."
+# Запуск бота
+echo "🚀 Запуск бота..."
 nohup xvfb-run -a python3 -u bot/main.py > bot.log 2>&1 &
 echo $! > bot.pid
 
-echo "✅ Деплой успешно завершен!"
-echo "📝 Логи: bot.log"
-echo "🆔 PID процесса: $(cat bot.pid)"
+echo "✅ Готово! PID: $(cat bot.pid), логи: bot.log"
