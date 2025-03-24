@@ -1,8 +1,8 @@
 #!/bin/bash
 
-set -e # Прерывать выполнение при любой ошибке
+set -e
 
-echo "🔄 Начало процесса деплоя бота..."
+echo "🔄 Начало процесса деплоя бота (Ubuntu Server без GUI)..."
 
 # Проверка прав администратора
 if [ "$EUID" -ne 0 ]; then
@@ -10,80 +10,56 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-# Определение дистрибутива
-if [ -f /etc/os-release ]; then
-    . /etc/os-release
-    OS=$ID
-    VER=$VERSION_ID
-else
-    echo "❌ Не удалось определить дистрибутив!"
-    exit 1
-fi
+# Обновление системы
+echo "🔄 Обновление пакетов системы..."
+apt-get update
+apt-get upgrade -y
 
-# Установка Python3 и pip3
-if ! command -v python3 &> /dev/null; then
-    echo "🐍 Установка Python3..."
-    case $OS in
-        ubuntu|debian)
-            apt-get update
-            apt-get install -y python3 python3-pip python3-venv
-            ;;
-        centos|rhel|fedora)
-            yum install -y python3 python3-pip
-            ;;
-        *)
-            echo "❌ Неподдерживаемый дистрибутив: $OS"
-            exit 1
-            ;;
-    esac
-fi
-
-# Установка системных зависимостей
+# Установка базовых зависимостей
 echo "📦 Установка системных зависимостей..."
-case $OS in
-    ubuntu|debian)
-        # Установка основных зависимостей
-        apt-get install -y wget unzip xvfb libnss3 libnspr4 \
-        libxss1 libappindicator3-1 libindicator7 \
-        gdebi-core software-properties-common
+apt-get install -y \
+    python3 \
+    python3-pip \
+    python3-venv \
+    wget \
+    unzip \
+    xvfb \
+    libnss3 \
+    libgconf-2-4 \
+    fonts-liberation \
+    libasound2 \
+    libxss1 \
+    libxtst6 \
+    libappindicator3-1 \
+    libsecret-1-0
 
-        # Попробовать разные варианты libgconf
-        apt-get install -y libgconf-2-4 || apt-get install -y libgconf2-4 || \
-        echo "⚠️  Не удалось установить libgconf, возможны проблемы с Chrome"
-        ;;
-    centos|rhel|fedora)
-        yum install -y wget unzip Xvfb nss libXScrnSaver \
-        libappindicator-gtk3 liberation-fonts
-        ;;
-esac
-
-# Установка Google Chrome
+# Установка Google Chrome Headless
 if ! command -v google-chrome &> /dev/null; then
-    echo "🌐 Установка Chrome..."
-    case $OS in
-        ubuntu|debian)
-            wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-            dpkg -i google-chrome-stable_current_amd64.deb || apt-get install -fy
-            rm google-chrome-stable_current_amd64.deb
-            ;;
-        centos|rhel|fedora)
-            wget https://dl.google.com/linux/direct/google-chrome-stable_current_x86_64.rpm
-            yum install -y ./google-chrome-stable_current_x86_64.rpm
-            rm google-chrome-stable_current_x86_64.rpm
-            ;;
-    esac
+    echo "🌐 Установка Chrome Headless..."
+    wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add -
+    echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
+    apt-get update
+    apt-get install -y google-chrome-stable --no-install-recommends
 fi
 
-# Установка chromedriver
+# Установка Chromedriver
 if ! command -v chromedriver &> /dev/null; then
     echo "🔧 Установка chromedriver..."
     CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d'.' -f1)
     CHROMEDRIVER_VERSION=$(wget -qO- "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_VERSION")
-    wget "https://chromedriver.storage.googleapis.com/$CHROMEDRIVER_VERSION/chromedriver_linux64.zip"
+    wget -q "https://chromedriver.storage.googleapis.com/$CHROMEDRIVER_VERSION/chromedriver_linux64.zip"
     unzip chromedriver_linux64.zip
     rm chromedriver_linux64.zip
     mv chromedriver /usr/local/bin/
     chmod +x /usr/local/bin/chromedriver
+fi
+
+# Настройка виртуального дисплея
+echo "🖥️  Настройка Xvfb..."
+if ! pgrep -x "Xvfb" > /dev/null; then
+    Xvfb :99 -screen 0 1024x768x16 &> /tmp/xvfb.log &
+    export DISPLAY=:99
+    echo "export DISPLAY=:99" >> /etc/profile
 fi
 
 # Переход в директорию проекта
@@ -92,11 +68,7 @@ cd "$(dirname "$0")"
 # Создание виртуального окружения
 if [ ! -d ".venv" ]; then
     echo "🛠️ Создание виртуального окружения..."
-    python3 -m venv .venv || {
-        echo "❌ Ошибка при создании venv, устанавливаем python3-venv"
-        apt-get install -y python3-venv
-        python3 -m venv .venv
-    }
+    python3 -m venv .venv
 fi
 
 # Остановка старого процесса
@@ -109,17 +81,17 @@ if [ -f bot.pid ]; then
     rm bot.pid
 fi
 
-# Активация окружения и установка зависимостей
-echo "📦 Обновление зависимостей..."
+# Установка зависимостей Python
+echo "📦 Обновление зависимостей Python..."
 source .venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# Запуск бота
-echo "🚀 Запуск бота..."
-nohup python3 -u bot/main.py > bot.log 2>&1 &
+# Запуск бота с headless-режимом
+echo "🚀 Запуск бота в headless-режиме..."
+nohup xvfb-run -a python3 -u bot/main.py > bot.log 2>&1 &
 echo $! > bot.pid
 
 echo "✅ Деплой успешно завершен!"
-echo "📝 Логи будут сохраняться в bot.log"
+echo "📝 Логи: bot.log"
 echo "🆔 PID процесса: $(cat bot.pid)"
