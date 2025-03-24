@@ -42,16 +42,59 @@ if ! command -v google-chrome &> /dev/null; then
     apt-get install -y google-chrome-stable --no-install-recommends
 fi
 
-# Установка Chromedriver
+# Установка Chromedriver (исправленная версия)
 if ! command -v chromedriver &> /dev/null; then
     echo "🔧 Установка chromedriver..."
-    CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d'.' -f1)
+
+    # Проверка доступности Chrome
+    if ! command -v google-chrome &> /dev/null; then
+        echo "❌ Chrome не установлен! Прерываю выполнение."
+        exit 1
+    fi
+
+    # Получение версии Chrome с обработкой ошибок
+    CHROME_VERSION=$(google-chrome --version 2>/dev/null | awk '{print $3}' | cut -d'.' -f1)
+    if [ -z "$CHROME_VERSION" ]; then
+        echo "❌ Не удалось определить версию Chrome!"
+        exit 1
+    fi
+
+    # Получение версии chromedriver
     CHROMEDRIVER_VERSION=$(wget -qO- "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_VERSION")
-    wget -q "https://chromedriver.storage.googleapis.com/$CHROMEDRIVER_VERSION/chromedriver_linux64.zip"
-    unzip chromedriver_linux64.zip
+    if [ -z "$CHROMEDRIVER_VERSION" ]; then
+        echo "❌ Не удалось получить версию chromedriver!"
+        exit 1
+    fi
+
+    echo "⚙️  Версия Chrome: $CHROME_VERSION"
+    echo "⚙️  Версия chromedriver: $CHROMEDRIVER_VERSION"
+
+    # Скачивание и распаковка
+    echo "📥 Скачивание chromedriver..."
+    if ! wget --progress=bar:force "https://chromedriver.storage.googleapis.com/$CHROMEDRIVER_VERSION/chromedriver_linux64.zip"; then
+        echo "❌ Ошибка скачивания chromedriver!"
+        exit 1
+    fi
+
+    echo "📦 Распаковка архива..."
+    if ! unzip chromedriver_linux64.zip; then
+        echo "❌ Ошибка распаковки архива!"
+        rm chromedriver_linux64.zip
+        exit 1
+    fi
+
+    # Очистка и установка
     rm chromedriver_linux64.zip
-    mv chromedriver /usr/local/bin/
-    chmod +x /usr/local/bin/chromedriver
+    sudo mv chromedriver /usr/local/bin/
+    sudo chmod +x /usr/local/bin/chromedriver
+
+    # Финальная проверка
+    if ! chromedriver --version; then
+        echo "❌ chromedriver не работает после установки!"
+        exit 1
+    fi
+
+    echo "✅ chromedriver успешно установлен"
 fi
 
 # Настройка Xvfb
