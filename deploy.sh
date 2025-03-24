@@ -42,9 +42,14 @@ fi
 echo "📦 Установка системных зависимостей..."
 case $OS in
     ubuntu|debian)
+        # Установка основных зависимостей
         apt-get install -y wget unzip xvfb libnss3 libnspr4 \
-        libgconf2-4 libxss1 libappindicator3-1 libindicator7 \
+        libxss1 libappindicator3-1 libindicator7 \
         gdebi-core software-properties-common
+
+        # Попробовать разные варианты libgconf
+        apt-get install -y libgconf-2-4 || apt-get install -y libgconf2-4 || \
+        echo "⚠️  Не удалось установить libgconf, возможны проблемы с Chrome"
         ;;
     centos|rhel|fedora)
         yum install -y wget unzip Xvfb nss libXScrnSaver \
@@ -87,10 +92,11 @@ cd "$(dirname "$0")"
 # Создание виртуального окружения
 if [ ! -d ".venv" ]; then
     echo "🛠️ Создание виртуального окружения..."
-    python3 -m venv .venv --without-pip
-    source .venv/bin/activate
-    curl -sS https://bootstrap.pypa.io/get-pip.py | python3
-    deactivate
+    python3 -m venv .venv || {
+        echo "❌ Ошибка при создании venv, устанавливаем python3-venv"
+        apt-get install -y python3-venv
+        python3 -m venv .venv
+    }
 fi
 
 # Остановка старого процесса
