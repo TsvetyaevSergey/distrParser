@@ -9,19 +9,18 @@ from datetime import datetime, timedelta
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-# Импорт Selenium для работы с динамически загружаемым контентом
+# Импорт Selenium для работы с динамически загружаемым содержимым
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-from config import URL, TELEGRAM_TOKEN
+from config import URL, TELEGRAM_TOKEN, PRODUCT_BUTTONS, POM_MODULES, POM_BUILD_MODULES, UNIFIED_POM_URLS
 
 # Настройка логирования
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG_FILE_PATH = os.path.join(BASE_DIR, "bot.log")
-
 logging.basicConfig(
     filename=LOG_FILE_PATH,
     filemode='a',
@@ -30,36 +29,23 @@ logging.basicConfig(
     encoding='utf-8'
 )
 
-# Конфигурация кнопок: первый уровень -> второй уровень -> ключ продукта
-PRODUCT_BUTTONS = {
-    "PRV": {"DEV": "cs-eng-proryv-dev", "STAND": "cs-eng-proryv-dev-prv", "PROD": "cs-eng-proryv-proryv_prod",
-            "POM": "POM"},
-    "TMIK": {"DEV": "cs-eng-tmik-dev", "STAND": "cs-eng-tmik-stand_tmik", "PROD": "cs-eng-tmik-prod_tmik",
-             "POM": "POM"},
-    "ECPS": {"DEV": "cs-eng-ecps-dev", "STAND": "cs-eng-ecps-dev_ecps", "PROD": "cs-eng-ecps-prod-ecps", "POM": "POM"},
-    "CM": {"DEV": "cs-eng-cm-dev", "STAND": "cs-eng-dust3-dev", "PROD": "версия отсутствует", "POM": "POM"},
-    "ITG": {"DEV": "cs-eng-itg", "STAND": "версия отсутствует", "PROD": "версия отсутствует", "POM": "POM"},
-}
 
-# Модули, необходимые для сборки POM для каждого продукта.
-POM_MODULES = {
-    "PRV": ["engbe", "glo", "itg", "dms", "dpd", "cm", "ped"],
-    # При необходимости можно добавить конфигурацию для других продуктов.
-}
-
-# URL для каждого модуля POM
-POM_URLS = {
-    "glo": "https://mvn.cstechnology.ru/#/releases/ru/cs/cs-glo",
-    "itg": "https://mvn.cstechnology.ru/#/releases/ru/cs/cs-itg",
-    "dms": "https://mvn.cstechnology.ru/#/releases/ru/cs/cs-dms",
-    "dpd": "https://mvn.cstechnology.ru/#/releases/ru/cs/cs-dpd",
-    "cm": "https://mvn.cstechnology.ru/#/releases/ru/cs/cs-cm",
-    "ped": "https://mvn.cstechnology.ru/#/releases/ru/cs/cs-ped",
-    "engbe": "https://mvn.cstechnology.ru/#/releases/ru/cs/engbe",
-}
+def get_pom_url(module: str, build: bool = False) -> str:
+    """
+    Возвращает URL для получения версии модуля.
+    Ссылки для локального и сборочного pom одинаковые.
+    Если build=True и имя модуля начинается с "engdb.", удаляем этот префикс для поиска URL.
+    """
+    if build:
+        if module.startswith("engdb."):
+            base = module[len("engdb."):]
+            return UNIFIED_POM_URLS.get(base)
+        else:
+            return UNIFIED_POM_URLS.get(module)
+    else:
+        return UNIFIED_POM_URLS.get(module)
 
 
-# Функция для создания клавиатуры с N колонками
 def build_keyboard(items: list[str], cols: int = 3) -> ReplyKeyboardMarkup:
     rows = [items[i:i + cols] for i in range(0, len(items), cols)]
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
@@ -94,7 +80,6 @@ def parse_pom_version(url: str) -> str:
     driver = webdriver.Chrome(options=options)
     try:
         driver.get(url)
-        # Ожидаем появления элемента с классом "card-editor"
         wait = WebDriverWait(driver, 10)
         wait.until(EC.presence_of_element_located((By.CLASS_NAME, "card-editor")))
         page_source = driver.page_source
@@ -109,7 +94,7 @@ def parse_pom_version(url: str) -> str:
             match = re.search(r"<version>([^<]+)</version>", text)
             if match:
                 return match.group(1).strip()
-    raise ValueError("Версия не найдена на странице")
+    raise ValueError("Версия не найдена на странице" + url)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -123,7 +108,6 @@ async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     text = update.message.text.strip()
     user_data = context.user_data
     logging.info(f"Пользователь выбрал: {text}")
-
     if 'product' not in user_data:
         if text in PRODUCT_BUTTONS:
             user_data['product'] = text
@@ -132,15 +116,12 @@ async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         else:
             await send_version(update, text)
         return
-
     product = user_data.pop('product')
     env = text
     combination = f"{product} {env}"
-
     if env == "POM":
         await send_pom_version(update, product, combination=combination)
         return
-
     product_key = PRODUCT_BUTTONS[product].get(env)
     if product_key:
         await send_version(update, product_key, combination=combination)
@@ -151,12 +132,14 @@ async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def send_version(update: Update, product_key: str, combination: str = None) -> None:
     if not combination:
         combination = product_key
-
     logging.info(f"Запрошена комбинация: {combination}")
 
+    # Экранируем специальные символы MarkdownV2
+    safe_combination = combination.replace(".", r"\.").replace("-", r"\-")
+
     if product_key == "версия отсутствует":
-        message = f"Комбинация: {combination}\nВерсия отсутствует для выбранной комбинации."
-        await update.message.reply_text(message, reply_markup=FIRST_KEYBOARD)
+        message = rf"*Комбинация:* {safe_combination}\nВерсия отсутствует для выбранной комбинации\."
+        await update.message.reply_text(message, reply_markup=FIRST_KEYBOARD, parse_mode="MarkdownV2")
         return
 
     try:
@@ -164,20 +147,31 @@ async def send_version(update: Update, product_key: str, combination: str = None
         if product_key in parsed:
             latest = parsed[product_key][-1]
             now = (datetime.now() + timedelta(hours=3)).strftime('%Y-%m-%d %H:%M:%S')
-            # Экранируем кавычки и оборачиваем строку в <pre>
+
+            # Экранируем только для Markdown (не для кодового блока)
             distr_line = f'projectDistr="{product_key}-{latest}"'
-            code_block = f"<pre>{distr_line}</pre>"
-            message = (f"Комбинация: {combination}\n\n{code_block}\n\n"
-                       f"(актуально на {now} по МСК)")
+            code_block = f"```\n{distr_line}\n```"
+
+            # Экранируем timestamp
+            safe_timestamp = now.replace("-", r"\-").replace(":", r"\:")
+
+            message = (
+                rf"*Комбинация:* {safe_combination}"
+                f"{code_block}\n\n"
+                rf"\(актуально на {safe_timestamp} по МСК\)"
+            )
         else:
-            message = f"Комбинация: {combination}\n\nПродукт {product_key} не найден на сервере."
+            safe_product_key = product_key.replace(".", r"\.").replace("-", r"\-")
+            message = rf"*Комбинация:* {safe_combination} Продукт {safe_product_key} не найден на сервере\."
+
+        logging.info(f"Ответ бота: {message}")
+        await update.message.reply_text(message, reply_markup=FIRST_KEYBOARD, parse_mode="MarkdownV2")
+
     except Exception as e:
         logging.exception("Ошибка при получении данных")
-        message = f"Ошибка при получении данных: {e}"
-
-    logging.info(f"Ответ бота: {message}")
-    await update.message.reply_text(message, reply_markup=FIRST_KEYBOARD, parse_mode="HTML")
-
+        error_message = f"Ошибка при получении данных: {str(e)}"
+        await update.message.reply_text(error_message.replace(".", r"\."), reply_markup=FIRST_KEYBOARD,
+                                        parse_mode="MarkdownV2")
 
 
 async def send_pom_version(update: Update, product: str, combination: str) -> None:
@@ -190,34 +184,84 @@ async def send_pom_version(update: Update, product: str, combination: str) -> No
     await update.message.reply_text("Начинаю сбор информации, подождите, пожалуйста...")
 
     start_time = time.time()
-    modules = POM_MODULES[product]
-    version_lines = []
-    try:
-        for module in modules:
-            url = POM_URLS.get(module)
-            if not url:
-                version = "URL не задан"
-            else:
-                version = parse_pom_version(url)
-            # Экранируем угловые скобки
-            version_line = f"&lt;{module}.version&gt;{version}&lt;/{module}.version&gt;"
-            version_lines.append(version_line)
+    version_cache = {}  # Кэш для хранения версий модулей
 
+    try:
+        # Обработка локальных модулей
+        local_versions = []
+        for module in POM_MODULES[product]:
+            base_name = module.replace("engdb.", "", 1)  # Нормализуем имя
+            if base_name in version_cache:
+                version = version_cache[base_name]
+            else:
+                url = get_pom_url(module, build=False)
+                version = parse_pom_version(url) if url else "URL не задан"
+                version_cache[base_name] = version
+            local_versions.append(f"<{module}.version>{version}</{module}.version>")
+
+        # Обработка сборочных модулей
+        build_config = POM_BUILD_MODULES.get(product, {})
+        build_lines = ["<properties>", "    <!-- CORE VERSIONS -->"]
+
+        for module in build_config.get("CORE", []):
+            if module == "engdb.help.branch":
+                build_lines.append("    <engdb.help.branch.version>INSERT NAME</engdb.help.branch.version>")
+                continue
+
+            base_name = module.replace("engdb.", "", 1)
+            if base_name in version_cache:
+                version = version_cache[base_name]
+            else:
+                url = get_pom_url(module, build=True)
+                version = parse_pom_version(url) if url else "URL не задан"
+                version_cache[base_name] = version
+            build_lines.append(f"    <{module}.version>{version}</{module}.version>")
+
+        build_lines.append("    <!-- MODULES VERSIONS -->")
+        for module in build_config.get("MODULES", []):
+            base_name = module.replace("engdb.", "", 1)
+            if base_name in version_cache:
+                version = version_cache[base_name]
+            else:
+                url = get_pom_url(module, build=True)
+                version = parse_pom_version(url) if url else "URL не задан"
+                version_cache[base_name] = version
+            build_lines.append(f"    <{module}.version>{version}</{module}.version>")
+
+        build_lines.append("</properties>")
+
+        # Форматирование сообщения
         elapsed = time.time() - start_time
         now = (datetime.now() + timedelta(hours=3)).strftime('%Y-%m-%d %H:%M:%S')
 
-        # Собираем блок кода
-        code_block = "<pre>" + "\n".join(version_lines) + "\n</pre>"
-        message = (f"Комбинация: {combination}\n\n{code_block}\n\n"
-                   f"Сбор информации заняла {elapsed:.2f} секунд\n\n"
-                   f"(актуально на {now} по МСК)")
+        # Экранирование специальных символов
+        safe_combination = combination.replace(".", r"\.").replace("-", r"\-")
+        safe_elapsed = f"{elapsed:.2f}".replace(".", r"\.")
+        safe_now = now.replace("-", r"\-").replace(":", r"\:")
+
+        message = (
+                f"*Комбинация:* {safe_combination}\n\n"
+                f"*Для локального pom:*\n```\n" + "\n".join(local_versions) + "\n```\n"
+                                                                              f"_Сбор информации заняла {safe_elapsed} секунд_\n"
+                                                                              f"\\(актуально на {safe_now} по МСК\\)\n\n"
+                                                                              f"*Для создания сборки:*\n```\n" + "\n".join(
+            build_lines) + "\n```\n"
+                           f"\\(актуально на {safe_now} по МСК\\)"
+        )
+
+        await update.message.reply_text(
+            message,
+            reply_markup=FIRST_KEYBOARD,
+            parse_mode="MarkdownV2"
+        )
+
     except Exception as e:
-        logging.exception("Ошибка при получении POM данных")
-        message = f"Ошибка при получении данных для POM: {e}"
-
-    logging.info(f"Ответ бота для POM: {message}")
-    await update.message.reply_text(message, reply_markup=FIRST_KEYBOARD, parse_mode="HTML")
-
+        error_msg = f"Ошибка: {str(e)}".replace(".", r"\.")
+        await update.message.reply_text(
+            error_msg,
+            reply_markup=FIRST_KEYBOARD,
+            parse_mode="MarkdownV2"
+        )
 
 
 def main() -> None:
