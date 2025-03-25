@@ -7,18 +7,32 @@ echo "🔄 Начинается деплой окружения и бота..."
 cd "$(dirname "$0")"
 
 #############################
+# Часть 0. Проверка и установка Python 3.10.12 (если отсутствует)
+#############################
+if ! command -v python3.10 > /dev/null 2>&1; then
+    echo "Python 3.10 не найден. Устанавливаем Python 3.10.12 и необходимые пакеты..."
+    sudo apt update
+    sudo apt install -y python3.10 python3.10-venv
+else
+    PY_VER=$(python3.10 --version 2>&1)
+    echo "Найден $PY_VER"
+    # Если версия не совпадает с 3.10.12, можно вывести предупреждение:
+    if [[ $PY_VER != *"3.10.12"* ]]; then
+        echo "⚠️ Предупреждение: установлена версия $PY_VER, а требуется 3.10.12."
+    fi
+fi
+
+#############################
 # Часть 1. Установка окружения для Selenium (выполняется только один раз)
 #############################
 
-# Обновление списка пакетов
 echo "Обновление списка пакетов..."
 sudo apt update
 
-# Установка необходимых системных пакетов (если не установлены)
 echo "Установка необходимых пакетов (python3, pip, unzip, библиотеки)..."
 sudo apt install -y python3 python3-pip unzip libnss3 libxss1 libayatana-appindicator3-1 libindicator7
 
-# Установка Google Chrome (если не установлен)
+# Установка Google Chrome, если не установлен
 if ! command -v google-chrome > /dev/null 2>&1; then
     echo "Google Chrome не найден. Устанавливаем Google Chrome..."
     wget -nc https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
@@ -28,14 +42,14 @@ else
     echo "Google Chrome уже установлен: $(google-chrome --version)"
 fi
 
-# Установка chromedriver (если отсутствует)
+# Установка chromedriver, если не установлен
 if [ ! -f /usr/bin/chromedriver ]; then
     CHROME_VERSION="134.0.6998.165"
     echo "Chromedriver не найден. Скачиваем chromedriver для версии $CHROME_VERSION..."
     wget -nc https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chromedriver-linux64.zip
     echo "Распаковка архива chromedriver-linux64.zip..."
     unzip -o chromedriver-linux64.zip
-    # Если файл chromedriver не найден в корне, ищем его в папке chromedriver-linux64
+    # Если файл chromedriver не найден в корневой директории, ищем его в подпапке
     if [ -f chromedriver ]; then
         DRIVER_PATH="chromedriver"
     elif [ -f chromedriver-linux64/chromedriver ]; then
@@ -52,9 +66,8 @@ else
     echo "Chromedriver уже установлен."
 fi
 
-# Установка Python-пакетов (установка повторная не повредит)
 echo "Установка Python-зависимостей (selenium и webdriver-manager)..."
-pip3 install selenium webdriver-manager
+pip3 install selenium webdriver-manager --break-system-packages
 
 #############################
 # Часть 2. Деплой бота
@@ -72,20 +85,35 @@ if [ -f bot.pid ]; then
     rm -f bot.pid
 fi
 
-# Активация виртуального окружения и установка зависимостей проекта
-echo "📦 Активация виртуального окружения и установка зависимостей..."
+# Проверка и создание виртуального окружения с использованием python3.10
 if [ -d ".venv" ]; then
-    source .venv/bin/activate
-    pip install --upgrade pip
-    pip install -r requirements.txt
+    if [ -f ".venv/bin/activate" ]; then
+        echo "📦 Активация виртуального окружения..."
+        source .venv/bin/activate
+        VENV_PYTHON="python"
+    else
+        echo "⚠️ Файл активации (.venv/bin/activate) не найден. Используем .venv/bin/python3.10 напрямую."
+        VENV_PYTHON=".venv/bin/python3.10"
+    fi
 else
-    echo "Виртуальное окружение (.venv) не найдено. Создайте его перед деплоем."
-    exit 1
+    echo "Виртуальное окружение (.venv) не найдено. Создаем его с помощью Python 3.10..."
+    python3.10 -m venv .venv
+    if [ -f ".venv/bin/activate" ]; then
+        echo "📦 Активация виртуального окружения..."
+        source .venv/bin/activate
+        VENV_PYTHON="python"
+    else
+        echo "⚠️ Файл активации не найден. Используем .venv/bin/python3.10 напрямую."
+        VENV_PYTHON=".venv/bin/python3.10"
+    fi
 fi
 
-# Запуск бота в фоне и сохранение PID
+echo "Обновление pip и установка зависимостей проекта..."
+$VENV_PYTHON -m pip install --upgrade pip --break-system-packages
+$VENV_PYTHON -m pip install -r requirements.txt --break-system-packages
+
 echo "🚀 Запуск бота..."
-nohup python3 bot/main.py > bot.log 2>&1 &
+nohup $VENV_PYTHON bot/main.py > bot.log 2>&1 &
 echo $! > bot.pid
 
 echo "✅ Бот запущен! PID сохранён в bot.pid"
