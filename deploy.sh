@@ -1,138 +1,86 @@
 #!/bin/bash
 set -e
 
-# Режим автоматизации для needrestart
-export NEEDRESTART_MODE=a
-export DEBIAN_FRONTEND=noninteractive
+echo "🔄 Начинается деплой окружения и бота..."
 
-# Логирование всего вывода
-exec > >(tee -a deploy.log) 2>&1
-
-echo "🔄 Начало процесса деплоя ($(date))"
-
-# Проверка прав
-if [ "$EUID" -ne 0 ]; then
-    echo "⚠️  Запустите скрипт с sudo!"
-    exit 1
-fi
-
-# Обход проблем с needrestart
-sed -i "/#\$nrconf{restart} = 'i';/s/.*/\$nrconf{restart} = 'a';/" /etc/needrestart/needrestart.conf
-
-# Обновление системы
-echo "🔄 Обновление пакетов..."
-apt-get update
-apt-get -y full-upgrade
-
-# Установка зависимостей
-echo "📦 Установка системных пакетов..."
-apt-get install -y \
-    python3 \
-    python3-pip \
-    python3-venv \
-    wget \
-    unzip \
-    xvfb \
-    libnss3 \
-    libasound2t64 \
-    fonts-liberation \
-    libxss1 \
-    libxtst6 \
-    libappindicator3-1 \
-    libgbm1 \
-    libdrm2
-
-# Установка Chrome
-if ! command -v google-chrome &> /dev/null; then
-    echo "🌐 Установка Chrome..."
-    wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor > /usr/share/keyrings/googlechrome.gpg
-    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/googlechrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
-    apt-get update
-    apt-get install -y google-chrome-stable
-fi
-
-# Установка chromedriver с улучшенным логированием
-install_chromedriver() {
-    echo "🔧 Начало установки chromedriver..."
-    echo "⚙️ Проверка доступа к Google API..."
-    if ! curl -sI https://chromedriver.storage.googleapis.com >/dev/null; then
-        echo "❌ Нет доступа к chromedriver.storage.googleapis.com!"
-        exit 1
-    fi
-
-    CHROME_VERSION=$(google-chrome --version 2>/dev/null | awk '{print $3}')
-    if [ -z "$CHROME_VERSION" ]; then
-        echo "❌ Не удалось определить версию Chrome!"
-        exit 1
-    fi
-    echo "✅ Версия Chrome: $CHROME_VERSION"
-
-    CHROMEDRIVER_VERSION=$(wget -qO- "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$(echo $CHROME_VERSION | cut -d. -f1)")
-    if [ -z "$CHROMEDRIVER_VERSION" ]; then
-        echo "❌ Ошибка получения версии chromedriver!"
-        exit 1
-    fi
-    echo "⚙️ Совместимая версия chromedriver: $CHROMEDRIVER_VERSION"
-
-    echo "📥 Скачивание chromedriver..."
-    if ! wget --tries=3 --timeout=30 -q "https://chromedriver.storage.googleapis.com/$CHROMEDRIVER_VERSION/chromedriver_linux64.zip"; then
-        echo "❌ Ошибка скачивания chromedriver!"
-        exit 1
-    fi
-
-    echo "📦 Распаковка архива..."
-    if ! unzip -o chromedriver_linux64.zip; then
-        echo "❌ Ошибка распаковки!"
-        rm -f chromedriver_linux64.zip
-        exit 1
-    fi
-
-    rm -f chromedriver_linux64.zip
-    chmod +x chromedriver
-    mv chromedriver /usr/local/bin/
-    echo "✅ chromedriver установлен в /usr/local/bin/chromedriver"
-}
-
-if ! command -v chromedriver &> /dev/null; then
-    install_chromedriver
-fi
-
-# Настройка Xvfb
-echo "🖥️  Настройка виртуального дисплея..."
-if ! pgrep -x "Xvfb" > /dev/null; then
-    Xvfb :99 -screen 0 1024x768x16 &> /tmp/xvfb.log &
-    echo "export DISPLAY=:99" >> /etc/profile
-    source /etc/profile
-fi
-
-# Рабочая директория
+# Переход в директорию скрипта (корень проекта)
 cd "$(dirname "$0")"
 
-# Виртуальное окружение
-if [ ! -d ".venv" ]; then
-    echo "🛠️ Создание виртуального окружения..."
-    python3 -m venv .venv
+#############################
+# Часть 1. Установка окружения для Selenium (выполняется только один раз)
+#############################
+
+# Обновление списка пакетов
+echo "Обновление списка пакетов..."
+sudo apt update
+
+# Установка необходимых системных пакетов
+echo "Установка необходимых пакетов (python3, pip, unzip, библиотеки)..."
+sudo apt install -y python3 python3-pip unzip libnss3 libxss1 libayatana-appindicator3-1 libindicator7
+
+# Проверка установки Google Chrome
+if ! command -v google-chrome > /dev/null 2>&1; then
+    echo "Google Chrome не найден. Устанавливаем Google Chrome..."
+    wget -nc https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+    sudo apt install -y ./google-chrome-stable_current_amd64.deb
+    sudo apt --fix-broken install -y
+else
+    echo "Google Chrome уже установлен: $(google-chrome --version)"
 fi
 
-# Остановка предыдущего процесса
+# Проверка установки chromedriver
+if [ ! -f /usr/bin/chromedriver ]; then
+    CHROME_VERSION="134.0.6998.165"
+    echo "Chromedriver не найден. Скачиваем chromedriver для версии $CHROME_VERSION..."
+    wget -nc https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chromedriver-linux64.zip
+    echo "Распаковка архива chromedriver-linux64.zip..."
+    unzip -o chromedriver-linux64.zip
+    if [ ! -f chromedriver ]; then
+        echo "Файл 'chromedriver' не найден после распаковки."
+        exit 1
+    fi
+    echo "Перемещение chromedriver в /usr/bin/ и установка прав..."
+    sudo mv chromedriver /usr/bin/chromedriver
+    sudo chown root:root /usr/bin/chromedriver
+    sudo chmod +x /usr/bin/chromedriver
+else
+    echo "Chromedriver уже установлен."
+fi
+
+# Установка Python-пакетов (pip install перезаписывает зависимости без повторной загрузки, так что это безопасно)
+echo "Установка Python-зависимостей (selenium и webdriver-manager)..."
+pip3 install selenium webdriver-manager
+
+#############################
+# Часть 2. Деплой бота
+#############################
+
+echo "🔄 Деплой бота..."
+
+# Остановка старого процесса, если он запущен
 if [ -f bot.pid ]; then
     OLD_PID=$(cat bot.pid)
     if ps -p $OLD_PID > /dev/null; then
-        echo "🛑 Остановка процесса $OLD_PID..."
-        kill $OLD_PID
+        echo "🛑 Остановка старого процесса с PID $OLD_PID..."
+        kill $OLD_PID && echo "✅ Старый процесс остановлен."
     fi
-    rm bot.pid
+    rm -f bot.pid
 fi
 
-# Установка зависимостей
-echo "📦 Установка Python-зависимостей..."
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
+# Активация виртуального окружения и установка зависимостей проекта
+echo "📦 Активация виртуального окружения и установка зависимостей..."
+if [ -d ".venv" ]; then
+    source .venv/bin/activate
+    pip install --upgrade pip
+    pip install -r requirements.txt
+else
+    echo "Виртуальное окружение (.venv) не найдено. Создайте его перед деплоем."
+    exit 1
+fi
 
-# Запуск бота
+# Запуск бота в фоне и сохранение PID
 echo "🚀 Запуск бота..."
-nohup xvfb-run -a python3 -u bot/main.py > bot.log 2>&1 &
+nohup python3 bot/main.py > bot.log 2>&1 &
 echo $! > bot.pid
 
-echo "✅ Готово! PID: $(cat bot.pid), логи: bot.log"
+echo "✅ Бот запущен! PID сохранён в bot.pid"
