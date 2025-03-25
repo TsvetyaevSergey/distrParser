@@ -14,11 +14,11 @@ cd "$(dirname "$0")"
 echo "Обновление списка пакетов..."
 sudo apt update
 
-# Установка необходимых системных пакетов
+# Установка необходимых системных пакетов (если не установлены)
 echo "Установка необходимых пакетов (python3, pip, unzip, библиотеки)..."
 sudo apt install -y python3 python3-pip unzip libnss3 libxss1 libayatana-appindicator3-1 libindicator7
 
-# Проверка установки Google Chrome
+# Установка Google Chrome (если не установлен)
 if ! command -v google-chrome > /dev/null 2>&1; then
     echo "Google Chrome не найден. Устанавливаем Google Chrome..."
     wget -nc https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
@@ -28,26 +28,31 @@ else
     echo "Google Chrome уже установлен: $(google-chrome --version)"
 fi
 
-# Проверка установки chromedriver
+# Установка chromedriver (если отсутствует)
 if [ ! -f /usr/bin/chromedriver ]; then
     CHROME_VERSION="134.0.6998.165"
     echo "Chromedriver не найден. Скачиваем chromedriver для версии $CHROME_VERSION..."
     wget -nc https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chromedriver-linux64.zip
     echo "Распаковка архива chromedriver-linux64.zip..."
     unzip -o chromedriver-linux64.zip
-    if [ ! -f chromedriver ]; then
+    # Если файл chromedriver не найден в корне, ищем его в папке chromedriver-linux64
+    if [ -f chromedriver ]; then
+        DRIVER_PATH="chromedriver"
+    elif [ -f chromedriver-linux64/chromedriver ]; then
+        DRIVER_PATH="chromedriver-linux64/chromedriver"
+    else
         echo "Файл 'chromedriver' не найден после распаковки."
         exit 1
     fi
-    echo "Перемещение chromedriver в /usr/bin/ и установка прав..."
-    sudo mv chromedriver /usr/bin/chromedriver
+    echo "Перемещение $DRIVER_PATH в /usr/bin/ и установка прав..."
+    sudo mv "$DRIVER_PATH" /usr/bin/chromedriver
     sudo chown root:root /usr/bin/chromedriver
     sudo chmod +x /usr/bin/chromedriver
 else
     echo "Chromedriver уже установлен."
 fi
 
-# Установка Python-пакетов (pip install перезаписывает зависимости без повторной загрузки, так что это безопасно)
+# Установка Python-пакетов (установка повторная не повредит)
 echo "Установка Python-зависимостей (selenium и webdriver-manager)..."
 pip3 install selenium webdriver-manager
 
@@ -57,7 +62,7 @@ pip3 install selenium webdriver-manager
 
 echo "🔄 Деплой бота..."
 
-# Остановка старого процесса, если он запущен
+# Остановка старого процесса бота (если он запущен)
 if [ -f bot.pid ]; then
     OLD_PID=$(cat bot.pid)
     if ps -p $OLD_PID > /dev/null; then
