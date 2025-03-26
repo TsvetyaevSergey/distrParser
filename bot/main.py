@@ -6,15 +6,10 @@ import time
 from bs4 import BeautifulSoup
 from packaging.version import Version
 from datetime import datetime, timedelta
+
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-# Импорт Selenium для работы с динамически загружаемым содержимым
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 
 from config import URL, TELEGRAM_TOKEN, PRODUCT_BUTTONS, POM_MODULES, POM_BUILD_MODULES, UNIFIED_POM_URLS
 
@@ -70,31 +65,28 @@ def parse_index(url: str) -> dict[str, list[Version]]:
 
 def parse_pom_version(url: str) -> str:
     """
-    Для получения динамически загружаемого содержимого используем Selenium.
-    Необходимы: установка selenium и наличие chromedriver.
+    Парсит версию из XML (maven-metadata.xml) через lxml.
+    Пример URL: https://mvn.cstechnology.ru/releases/ru/cs/engbe/maven-metadata.xml
     """
-    options = Options()
-    options.add_argument("--headless")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--no-sandbox")
-    driver = webdriver.Chrome(options=options)
+    # Формируем корректный XML-URL
+    xml_url = url.replace("#/", "").rstrip("/") + "/maven-metadata.xml"
+
     try:
-        driver.get(url)
-        wait = WebDriverWait(driver, 10)
-        wait.until(EC.presence_of_element_located((By.CLASS_NAME, "card-editor")))
-        page_source = driver.page_source
-    finally:
-        driver.quit()
-    soup = BeautifulSoup(page_source, "html.parser")
-    card = soup.find("div", class_="card-editor")
-    if card:
-        pre = card.find("pre")
-        if pre:
-            text = pre.get_text()
-            match = re.search(r"<version>([^<]+)</version>", text)
-            if match:
-                return match.group(1).strip()
-    raise ValueError("Версия не найдена на странице" + url)
+        response = requests.get(xml_url)
+        response.raise_for_status()
+
+        # Используем lxml для парсинга XML
+        soup = BeautifulSoup(response.text, "lxml-xml")  # Явно указываем парсер
+        release_tag = soup.find("release")
+
+        if release_tag and release_tag.text.strip():
+            return release_tag.text.strip()
+
+        raise ValueError(f"Тег <release> не найден в {xml_url}")
+
+    except Exception as e:
+        logging.error(f"Ошибка при парсинге {xml_url}: {str(e)}")
+        raise
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
