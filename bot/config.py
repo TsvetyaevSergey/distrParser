@@ -19,6 +19,8 @@ PRODUCT_BUTTONS = {
     "tyazhmash": {"DEV": "версия отсутствует", "STAND": "cs-eng-tyazhmash-dev-tyazhmash",
                   "PROD": "cs-eng-tyazhmash-tyazhmash_prod", "POM": "POM"},
     "OSK": {"DEV": "версия отсутствует", "STAND": "cs-eng-osk-osk", "PROD": "версия отсутствует", "POM": "POM"},
+    "PED": {"DEV": "cs-eng-ped-dev", "STAND": "cs-eng-ped-dev_tpp", "PROD": "версия отсутствует", "POM": "POM"},
+    "DPD": {"DEV": "cs-eng-ped-dev", "STAND": "cs-eng-ped-dev_tpp", "PROD": "версия отсутствует", "POM": "POM"},
 }
 
 POM_MODULES = {
@@ -27,6 +29,8 @@ POM_MODULES = {
     "OSK": ["engbe", "glo", "dms", "dpd", "cm", "ped", "pm"],
     "CM": ["engbe", "glo", "dms", "dpd"],
     "TMIK": ["engbe", "glo", "dms", "dpd", "ped", "cfg"],
+    "DPD": ["engbe", "glo", "dms"],
+    "PED": ["engbe", "glo", "dms", "dpd"],
 }
 
 POM_BUILD_MODULES = {
@@ -115,6 +119,38 @@ POM_BUILD_MODULES = {
             "engdb.cfg",
             "engdb.tmik",
             "engdb.cm",
+        ]
+    },
+    "PED": {
+        "CORE": [
+            "engdb.engrestapi",
+            "engdb.cli",
+            "engdb.conv",
+            "engdb.front",
+            "engdb.help.branch"
+        ],
+        "MODULES": [
+            "engdb.glo",
+            "engdb.dms",
+            "engdb.dpd",
+            "engdb.cm",
+            "engdb.ped"
+        ]
+    },
+    "DPD": {
+        "CORE": [
+            "engdb.engrestapi",
+            "engdb.cli",
+            "engdb.conv",
+            "engdb.front",
+            "engdb.help.branch"
+        ],
+        "MODULES": [
+            "engdb.glo",
+            "engdb.dms",
+            "engdb.dpd",
+            "engdb.cm",
+            "engdb.ped"
         ]
     }
 }
