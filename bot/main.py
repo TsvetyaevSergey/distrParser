@@ -197,7 +197,7 @@ async def send_pom_version(update: Update, product: str, combination: str) -> No
 
         for module in build_config.get("CORE", []):
             if module == "engdb.help.branch":
-                build_lines.append("    <engdb.help.branch.version>INSERT NAME</engdb.help.branch.version>")
+                build_lines.append("    <engdb.help.branch>INSERT NAME</engdb.help.branch>")
                 continue
 
             base_name = module.replace("engdb.", "", 1)
