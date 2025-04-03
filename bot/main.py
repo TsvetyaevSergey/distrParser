@@ -91,7 +91,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     sub_button = "Отписаться от рассылки" if user_id in subs["users"] else "Подписаться на рассылку"
 
     keyboard = [
-        ["Добавить релиз модуля", "Получить"],
+        ["Добавить релиз", "Получить"],
         [sub_button]
     ]
     await update.message.reply_text(
@@ -106,7 +106,7 @@ async def choose_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     if text == "Получить":
         await update.message.reply_text("Выберите продукт:", reply_markup=FIRST_KEYBOARD)
         return ConversationHandler.END
-    elif text == "Добавить релиз модуля":
+    elif text == "Добавить релиз":
         modules_keyboard = [MODULES_LIST[i:i + 3] for i in range(0, len(MODULES_LIST), 3)]
         await update.message.reply_text(
             "Выберите модуль:",
@@ -224,7 +224,7 @@ async def input_description(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         user_id = update.effective_user.id
         sub_button = "Отписаться от рассылки" if user_id in subs["users"] else "Подписаться на рассылку"
         keyboard = [
-            ["Добавить релиз модуля", "Получить"],
+            ["Добавить релиз", "Получить"],
             [sub_button]
         ]
         await update.message.reply_text(
@@ -331,6 +331,7 @@ async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     text = update.message.text.strip()
     user_data = context.user_data
     logging.info(f"Пользователь выбрал: {text}")
+    logging.info(f"Дата: {user_data}")
 
     if 'pending_pom' in user_data:
         # Обработка выбора типа версий
@@ -356,7 +357,7 @@ async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         product = user_data.pop('product')
         combination = f"{product} {text}"
         if text in ["DEV", "STAND", "POM"]:
-            await send_version(update, text, context=context, combination=combination)
+            await send_version(update, text, context=context, project=product)
         if text == "POM":
             user_data['pending_pom'] = {
                 'product': product,
@@ -367,31 +368,32 @@ async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 reply_markup=ReplyKeyboardMarkup([["Прошедшие тестирование", "Новейшие"]], resize_keyboard=True)
             )
             return CHOOSE_VERSION_TYPE
+    if text == "Добавить релиз":
+        modules_keyboard = [MODULES_LIST[i:i + 3] for i in range(0, len(MODULES_LIST), 3)]
+        await update.message.reply_text(
+            "Выберите модуль:",
+            reply_markup=ReplyKeyboardMarkup(modules_keyboard, resize_keyboard=True)
+        )
+        return SELECT_MODULE
 
 
+async def send_version(update: Update, product_key: str, context: ContextTypes.DEFAULT_TYPE, project: str = None) -> None:
 
-
-async def send_version(update: Update, product_key: str, context: ContextTypes.DEFAULT_TYPE, combination: str = None) -> None:
-    if not combination:
-        combination = product_key
-    logging.info(f"Запрошена комбинация: {combination}")
-
-    # Экранируем специальные символы MarkdownV2
-    safe_combination = combination.replace(".", r"\.").replace("-", r"\-")
-
+    logging.info(f"Запрошена комбинация: {project } {product_key}")
+    safe_combination = f"{project } {product_key}"
     if product_key == "версия отсутствует":
-        message = rf"*Комбинация:* {safe_combination}\nВерсия отсутствует для выбранной комбинации\."
+        message = rf"*Комбинация:* {project } {product_key}\nВерсия отсутствует для выбранной комбинации\."
         await update.message.reply_text(message, reply_markup=build_main_menu(update.effective_user.id), parse_mode="MarkdownV2")
         return
-
+    product = PRODUCT_BUTTONS[project][product_key]
     try:
         parsed = parse_index(URL)
-        if product_key in parsed:
-            latest = parsed[product_key][-1]
+        if product in parsed:
+            latest = parsed[product][-1]
             now = (datetime.now() + timedelta(hours=3)).strftime('%Y-%m-%d %H:%M:%S')
 
             # Экранируем только для Markdown (не для кодового блока)
-            distr_line = f'projectDistr="{product_key}-{latest}"'
+            distr_line = f'projectDistr="{product}-{latest}"'
             code_block = f"```\n{distr_line}\n```"
 
             # Экранируем timestamp
@@ -403,8 +405,7 @@ async def send_version(update: Update, product_key: str, context: ContextTypes.D
                 rf"\(актуально на {safe_timestamp} по МСК\)"
             )
         else:
-            safe_product_key = product_key.replace(".", r"\.").replace("-", r"\-")
-            message = rf"*Комбинация:* {safe_combination} Продукт {safe_product_key} не найден на сервере\."
+            message = rf"*Комбинация:* {safe_combination} Продукт {product} не найден на сервере\."
 
         logging.info(f"Ответ бота: {message}")
         await update.message.reply_text(message, reply_markup=build_main_menu(update.effective_user.id), parse_mode="MarkdownV2")
