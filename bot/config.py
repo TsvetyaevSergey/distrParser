@@ -8,6 +8,16 @@ URL = os.getenv("URL")
 
 # config_data.py
 
+# Добавим список модулей и пути к JSON
+MODULES_LIST = [
+    "engrestapi", "cli", "conv", "front",
+    "glo", "cfg", "itg", "dms", "dpd", "cm", "ped",
+    "proryv", "bdrk", "tyazhmash", "pm", "tmik"
+]
+
+RELEASES_JSON_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "releases.json")
+SUBSCRIPTIONS_JSON_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "subscriptions.json")
+
 PRODUCT_BUTTONS = {
     "PRV": {"DEV": "cs-eng-proryv-dev", "STAND": "cs-eng-proryv-dev-prv", "PROD": "cs-eng-proryv-proryv_prod",
             "POM": "POM"},
