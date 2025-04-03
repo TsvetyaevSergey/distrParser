@@ -10,35 +10,58 @@ from packaging.version import Version
 from datetime import datetime, timedelta
 
 from telegram import Update, ReplyKeyboardMarkup, User
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+    ConversationHandler,
+)
 
-from config import URL, TELEGRAM_TOKEN, PRODUCT_BUTTONS, POM_MODULES, POM_BUILD_MODULES, UNIFIED_POM_URLS, MODULES_LIST, \
-    RELEASES_JSON_PATH, SUBSCRIPTIONS_JSON_PATH
+from config import (
+    URL,
+    TELEGRAM_TOKEN,
+    PRODUCT_BUTTONS,
+    POM_MODULES,
+    POM_BUILD_MODULES,
+    UNIFIED_POM_URLS,
+    MODULES_LIST,
+    RELEASES_JSON_PATH,
+    SUBSCRIPTIONS_JSON_PATH,
+)
 
 # Настройка логирования
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG_FILE_PATH = os.path.join(BASE_DIR, "bot.log")
 logging.basicConfig(
     filename=LOG_FILE_PATH,
-    filemode='a',
-    format='%(asctime)s - %(levelname)s - %(message)s',
+    filemode="a",
+    format="%(asctime)s - %(levelname)s - %(message)s",
     level=logging.INFO,
-    encoding='utf-8'
+    encoding="utf-8",
 )
 
-# Состояния для ConversationHandler
-CHOOSE_ACTION, SELECT_MODULE, INPUT_VERSION, INPUT_DESCRIPTION, CHOOSE_VERSION_TYPE = range(5)
+# Состояния
+(
+    MAIN_MENU,
+    ADD_RELEASE_MODULE,
+    ADD_RELEASE_VERSION,
+    ADD_RELEASE_DESCRIPTION,
+    GET_PROJECT,
+    GET_BUILD_TYPE,
+    GET_VERSION_TYPE,
+) = range(7)
+
 
 def get_user_info(user: User) -> str:
-    """Собирает информацию о пользователе в формате: @username Имя Фамилия (id123)"""
     parts = []
     if user.username:
         parts.append(f"@{user.username}")
     if user.full_name.strip():
         parts.append(user.full_name)
-    if not parts:  # Если нет ничего, используем ID
-        parts.append(f"id{user.id}")
-    return " ".join(parts)
+    return " ".join(parts) if parts else f"id{user.id}"
+
 
 def load_releases() -> list:
     try:
@@ -49,13 +72,9 @@ def load_releases() -> list:
 
 
 def save_releases(data: list) -> None:
-    # Удаляем дубликаты перед сохранением
-    unique_modules = {}
-    for item in data:
-        module = item["module"]
-        unique_modules[module] = item  # Перезаписываем дубликаты
+    unique = {item["module"]: item for item in data}
     with open(RELEASES_JSON_PATH, "w", encoding="utf-8") as f:
-        json.dump(list(unique_modules.values()), f, ensure_ascii=False, indent=2)
+        json.dump(list(unique.values()), f, ensure_ascii=False, indent=2)
 
 
 def load_subscriptions() -> dict:
@@ -71,190 +90,215 @@ def save_subscriptions(data: dict) -> None:
         json.dump(data, f, indent=2)
 
 
-async def toggle_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
+def build_main_menu(user_id: int) -> ReplyKeyboardMarkup:
     subs = load_subscriptions()
+    sub_button = "Отписаться" if user_id in subs["users"] else "Подписаться"
+    return ReplyKeyboardMarkup(
+        [["Добавить релиз", "Получить"], [sub_button]], resize_keyboard=True
+    )
 
-    if user_id in subs["users"]:
-        subs["users"].remove(user_id)
-        text = "❌ Вы отписались от рассылки"
-    else:
-        subs["users"].append(user_id)
-        text = "✅ Вы подписались на рассылку"
 
-    save_subscriptions(subs)
-    await update.message.reply_text(text)
+def build_keyboard(items: list, cols: int = 3) -> ReplyKeyboardMarkup:
+    rows = [items[i: i + cols] for i in range(0, len(items), cols)]
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    subs = load_subscriptions()
-    user_id = update.effective_user.id
-    sub_button = "Отписаться от рассылки" if user_id in subs["users"] else "Подписаться на рассылку"
-
-    keyboard = [
-        ["Добавить релиз", "Получить"],
-        [sub_button]
-    ]
+    context.user_data.clear()
     await update.message.reply_text(
-        "Выберите действие:",
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        "Главное меню:", reply_markup=build_main_menu(update.effective_user.id)
     )
-    return CHOOSE_ACTION
+    return MAIN_MENU
 
 
-async def choose_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = update.message.text
-    if text == "Получить":
-        await update.message.reply_text("Выберите продукт:", reply_markup=FIRST_KEYBOARD)
-        return ConversationHandler.END
-    elif text == "Добавить релиз":
-        modules_keyboard = [MODULES_LIST[i:i + 3] for i in range(0, len(MODULES_LIST), 3)]
-        await update.message.reply_text(
-            "Выберите модуль:",
-            reply_markup=ReplyKeyboardMarkup(modules_keyboard, resize_keyboard=True)
-        )
-        return SELECT_MODULE
-    else:
-        # Пропускаем сообщения, которые не относятся к текущему ConversationHandler
-        return ConversationHandler.END  # Завершаем текущий диалог
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("Действие отменено")
+    return await start(update, context)
 
 
-async def select_module(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+# Блок добавления релиза
+async def add_release_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    keyboard = build_keyboard(MODULES_LIST)
+    await update.message.reply_text("Выберите модуль:", reply_markup=keyboard)
+    return ADD_RELEASE_MODULE
+
+
+async def add_release_module(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     module = update.message.text
     if module not in MODULES_LIST:
         await update.message.reply_text("Неверный модуль. Выберите из списка.")
-        return SELECT_MODULE
+        return ADD_RELEASE_MODULE
 
     context.user_data["module"] = module
     await update.message.reply_text(
-        "Введите версию модуля в формате X.Y.Z (например, 1.18.3):\n"
-        "❗ Убедитесь, что версия прошла тестирование!"
+        "Введите версию в формате X.Y.Z:\n❗ Убедитесь в корректности версии!",
+        reply_markup=ReplyKeyboardMarkup([["/cancel"]], resize_keyboard=True),
     )
-    return INPUT_VERSION
+    return ADD_RELEASE_VERSION
 
 
-async def input_version(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def add_release_version(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     version = update.message.text.strip()
     if not re.match(r"^\d+(\.\d+){1,3}$", version):
-        await update.message.reply_text("❌ Неверный формат версии! Попробуйте снова.")
-        return INPUT_VERSION
+        await update.message.reply_text("❌ Неверный формат! Попробуйте снова.")
+        return ADD_RELEASE_VERSION
 
     context.user_data["version"] = version
     await update.message.reply_text(
-        "📝 Введите описание изменений (или нажмите /skip чтобы пропустить):"
+        "Введите описание (или /skip):",
+        reply_markup=ReplyKeyboardMarkup([["/skip", "/cancel"]], resize_keyboard=True),
     )
-    return INPUT_DESCRIPTION
+    return ADD_RELEASE_DESCRIPTION
 
 
-async def notify_subscribers(bot, data: dict) -> None:
-    """Улучшенная рассылка с проверкой данных."""
-    try:
-        # Проверяем наличие обязательных полей
-        required_fields = ["module", "version", "timestamp", "user"]
-        for field in required_fields:
-            if field not in data:
-                raise KeyError(f"Отсутствует поле: {field}")
+async def add_release_description(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    description = update.message.text
+    context.user_data["description"] = description
 
-        # Формируем сообщение
-        message = (
-            f"🚀 Новый релиз модуля {data['module']}!\n"
-            f"🔖 Версия: {data['version']}\n"
-            f"⏰ Время: {data['timestamp']}\n"
-            f"👤 Автор: {data['user']}\n"
-        )
-        if data.get("description"):
-            message += f"📝 Описание: {data['description']}\n"
+    release_data = {
+        "module": context.user_data["module"],
+        "version": context.user_data["version"],
+        "description": description,
+        "timestamp": (datetime.now() + timedelta(hours=3)).strftime('%Y-%m-%d %H:%M:%S'),
+        "user": get_user_info(update.effective_user),
+    }
 
-        # Отправляем уведомления подписчикам
-        subs = load_subscriptions()
-        for user_id in subs["users"]:
-            await bot.send_message(
-                chat_id=user_id,
-                text=message,
-                parse_mode="Markdown"
-            )
+    releases = load_releases()
+    releases.append(release_data)
+    save_releases(releases)
 
-    except KeyError as e:
-        logging.error(f"Ошибка в данных: {str(e)}")
-    except Exception as e:
-        logging.error(f"Ошибка рассылки: {str(e)}")
-
-
-async def input_description(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    try:
-        description = update.message.text
-        context.user_data["description"] = description
-        # Добавляем обязательные поля в контекст
-        context.user_data["timestamp"] = (datetime.now() + timedelta(hours=3)).strftime('%Y-%m-%d %H:%M:%S')
-        context.user_data["user"] = get_user_info(update.effective_user)  # Не забываем добавить пользователя
-
-        # Логируем данные перед рассылкой
-        logging.info(f"Данные контекста: {context.user_data}")
-        # Сохранение данных с обновлением существующих записей
-        releases = load_releases()
-        module_name = context.user_data["module"]
-
-        # Поиск существующей записи
-        existing_entry = next((item for item in releases if item["module"] == module_name), None)
-
-        if existing_entry:
-            # Обновляем существующую запись
-            existing_entry.update({
-                "version": context.user_data["version"],
-                "description": description,
-                "timestamp": (datetime.now() + timedelta(hours=3)).strftime('%Y-%m-%d %H:%M:%S'),
-                "user": get_user_info(update.effective_user)
-            })
-        else:
-            # Добавляем новую запись
-            releases.append({
-                "module": module_name,
-                "version": context.user_data["version"],
-                "description": description,
-                "timestamp": (datetime.now() + timedelta(hours=3)).strftime('%Y-%m-%d %H:%M:%S'),
-                "user": get_user_info(update.effective_user)
-            })
-
-        save_releases(releases)
-
-        # Рассылка уведомлений
-        asyncio.create_task(notify_subscribers(context.bot, context.user_data))
-
-        # Возврат в главное меню
-        subs = load_subscriptions()
-        user_id = update.effective_user.id
-        sub_button = "Отписаться от рассылки" if user_id in subs["users"] else "Подписаться на рассылку"
-        keyboard = [
-            ["Добавить релиз", "Получить"],
-            [sub_button]
-        ]
-        await update.message.reply_text(
-            f"✅ Версия {context.user_data['version']} успешно добавлена!",
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        )
-        context.user_data.clear()
-        return ConversationHandler.END
-    except Exception as e:
-        logging.error(f"Критическая ошибка: {str(e)}")
-        await update.message.reply_text("⚠️ Ошибка системы. Попробуйте позже.")
-        return ConversationHandler.END
-
-def build_main_menu(user_id: int) -> ReplyKeyboardMarkup:
-    """Динамическое построение главного меню."""
-    subs = load_subscriptions()
-    sub_button = "Отписаться от рассылки" if user_id in subs["users"] else "Подписаться на рассылку"
-    return ReplyKeyboardMarkup(
-        [
-            ["Добавить релиз", "Получить"],
-            [sub_button]
-        ],
-        resize_keyboard=True
+    await notify_subscribers(context.bot, release_data)
+    await update.message.reply_text(
+        "✅ Релиз добавлен!", reply_markup=build_main_menu(update.effective_user.id)
     )
+    context.user_data.clear()
+    return MAIN_MENU
 
-# 2. Исправление команды /skip
+
 async def skip_description(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["description"] = ""  # Устанавливаем пустое описание
-    return await input_description(update, context)
+    context.user_data["description"] = ""
+    return await add_release_description(update, context)
 
+
+async def notify_subscribers(bot, data: dict):
+    message = (
+        f"🚀 Новый релиз {data['module']} v{data['version']}\n"
+        f"📅 {data['timestamp']}\n👤 {data['user']}\n"
+    )
+    if data["description"]:
+        message += f"📝 {data['description']}"
+
+    subs = load_subscriptions()
+    for user_id in subs["users"]:
+        await bot.send_message(chat_id=user_id, text=message)
+
+
+# Блок получения версий
+async def get_version_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    keyboard = build_keyboard(list(PRODUCT_BUTTONS.keys()))
+    await update.message.reply_text("Выберите проект:", reply_markup=keyboard)
+    return GET_PROJECT
+
+
+async def get_project(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    project = update.message.text
+    if project not in PRODUCT_BUTTONS:
+        await update.message.reply_text("Неверный проект. Выберите из списка.")
+        return GET_PROJECT
+
+    context.user_data["project"] = project
+    keyboard = build_keyboard(list(PRODUCT_BUTTONS[project].keys()))
+    await update.message.reply_text("Выберите сборку:", reply_markup=keyboard)
+    return GET_BUILD_TYPE
+
+
+async def get_build_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    build_type = update.message.text
+    project = context.user_data["project"]
+
+    if build_type not in PRODUCT_BUTTONS[project]:
+        await update.message.reply_text("Неверная сборка. Выберите из списка.")
+        return GET_BUILD_TYPE
+
+    if build_type == "POM":
+        keyboard = ReplyKeyboardMarkup([["Прошедшие тестирование", "Новейшие"]], resize_keyboard=True)
+        await update.message.reply_text("Выберите тип версий:", reply_markup=keyboard)
+        return GET_VERSION_TYPE
+
+    await send_version(update, context, build_type)
+    return MAIN_MENU
+
+
+async def get_version_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    version_type = update.message.text
+    if version_type not in ["Прошедшие тестирование", "Новейшие"]:
+        await update.message.reply_text("Неверный тип. Выберите из списка.")
+        return GET_VERSION_TYPE
+
+    await send_pom_version(update, context, version_type)
+    return MAIN_MENU
+
+
+def parse_index(url: str) -> dict[str, list[Version]]:
+    response = requests.get(url)
+    soup = BeautifulSoup(response.text, "html.parser")
+    versions = {}
+    for link in soup.select("ul li a[href$='.tar.gz']"):
+        href = link.get('href')
+        match = re.match(r"^(.+)-(\d+(?:\.\d+)*)\.tar\.gz$", href)
+        if match:
+            name, ver = match.groups()
+            versions.setdefault(name, []).append(Version(ver))
+    return {name: sorted(vs) for name, vs in versions.items()}
+
+
+def parse_pom_version(url: str) -> str:
+    xml_url = url.replace("#/", "").rstrip("/") + "/maven-metadata.xml"
+    try:
+        response = requests.get(xml_url)
+        soup = BeautifulSoup(response.text, "lxml-xml")
+        return soup.find("release").text.strip()
+    except Exception as e:
+        logging.error(f"Ошибка парсинга POM: {str(e)}")
+        return "Ошибка получения"
+
+
+async def send_version(update: Update, context: ContextTypes.DEFAULT_TYPE, build_type: str):
+    project = context.user_data["project"]
+    combination = f"{project} {build_type}"
+
+    try:
+        parsed = parse_index(URL)
+        product = PRODUCT_BUTTONS[project][build_type]
+
+        if product in parsed:
+            latest = parsed[product][-1]
+            timestamp = (datetime.now() + timedelta(hours=3)).strftime('%Y-%m-%d %H:%M:%S')
+
+            # Экранируем специальные символы
+            safe_combination = re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', combination)
+            safe_product = re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', product)
+            safe_latest = re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', str(latest))
+            safe_timestamp = re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', timestamp)
+
+            message = (
+                rf"*Комбинация:* {safe_combination}"
+                rf"```\nprojectDistr=\"{safe_product}-{safe_latest}\"```"
+                rf"\(актуально на {safe_timestamp} по МСК\)"
+            )
+        else:
+            safe_combination = re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', combination)
+            message = rf"*Комбинация:* {safe_combination}\nВерсия не найдена"
+
+        await update.message.reply_text(
+            message,
+            reply_markup=build_main_menu(update.effective_user.id),
+            parse_mode="MarkdownV2"
+        )
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка: {str(e)}")
+    finally:
+        context.user_data.clear()
 
 def get_pom_url(module: str, build: bool = False) -> str:
     """
@@ -271,161 +315,13 @@ def get_pom_url(module: str, build: bool = False) -> str:
     else:
         return UNIFIED_POM_URLS.get(module)
 
-
-def build_keyboard(items: list[str], cols: int = 3) -> ReplyKeyboardMarkup:
-    rows = [items[i:i + cols] for i in range(0, len(items), cols)]
-    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
-
-
-FIRST_KEYBOARD = build_keyboard(list(PRODUCT_BUTTONS.keys()), cols=3)
-
-
-def parse_index(url: str) -> dict[str, list[Version]]:
-    response = requests.get(url)
-    response.raise_for_status()
-    soup = BeautifulSoup(response.text, "html.parser")
-    versions = {}
-    for link in soup.select("ul li a[href$='.tar.gz']"):
-        href = link.get('href')
-        match = re.match(r"^(.+)-(\d+(?:\.\d+)*)\.tar\.gz$", href)
-        if match:
-            name, ver = match.groups()
-            versions.setdefault(name, []).append(Version(ver))
-    return {name: sorted(vs) for name, vs in versions.items()}
-
-
-def parse_pom_version(url: str) -> str:
-    """
-    Парсит версию из XML (maven-metadata.xml) через lxml.
-    Пример URL: https://mvn.cstechnology.ru/releases/ru/cs/engbe/maven-metadata.xml
-    """
-    # Формируем корректный XML-URL
-    xml_url = url.replace("#/", "").rstrip("/") + "/maven-metadata.xml"
-
-    try:
-        response = requests.get(xml_url)
-        response.raise_for_status()
-
-        # Используем lxml для парсинга XML
-        soup = BeautifulSoup(response.text, "lxml-xml")  # Явно указываем парсер
-        release_tag = soup.find("release")
-
-        if release_tag and release_tag.text.strip():
-            return release_tag.text.strip()
-
-        raise ValueError(f"Тег <release> не найден в {xml_url}")
-
-    except Exception as e:
-        logging.error(f"Ошибка при парсинге {xml_url}: {str(e)}")
-        raise
-
-
-async def old_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    context.user_data.clear()
-    user = update.effective_user
-    logging.info(f"Пользователь {user.full_name} начал работу через /start")
-    await update.message.reply_text("Выберите продукт:", reply_markup=FIRST_KEYBOARD)
-
-
-async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text = update.message.text.strip()
-    user_data = context.user_data
-    logging.info(f"Пользователь выбрал: {text}")
-    logging.info(f"Дата: {user_data}")
-
-    if 'pending_pom' in user_data:
-        # Обработка выбора типа версий
-        if text == "Прошедшие тестирование":
-            await send_pom_version(update, user_data['pending_pom']['product'],
-                                   user_data['pending_pom']['combination'], True, context)
-        elif text == "Новейшие":
-            await send_pom_version(update, user_data['pending_pom']['product'],
-                                   user_data['pending_pom']['combination'], False, context)
-        else:
-            await update.message.reply_text("Неверный выбор. Используйте кнопки.")
-        del user_data['pending_pom']
-        return
-
-    if 'product' not in user_data:
-        if text in PRODUCT_BUTTONS:
-            print(text)
-            user_data['product'] = text
-            second_keyboard = build_keyboard(list(PRODUCT_BUTTONS[text].keys()), cols=3)
-            await update.message.reply_text(f"{text}: выберите среду:", reply_markup=second_keyboard)
-    else:
-        print(text + " 222")
-        product = user_data.pop('product')
-        combination = f"{product} {text}"
-        if text in ["DEV", "STAND", "POM"]:
-            await send_version(update, text, context=context, project=product)
-        if text == "POM":
-            user_data['pending_pom'] = {
-                'product': product,
-                'combination': combination
-            }
-            await update.message.reply_text(
-                "Выберите тип версий:",
-                reply_markup=ReplyKeyboardMarkup([["Прошедшие тестирование", "Новейшие"]], resize_keyboard=True)
-            )
-            return CHOOSE_VERSION_TYPE
-    if text == "Добавить релиз":
-        modules_keyboard = [MODULES_LIST[i:i + 3] for i in range(0, len(MODULES_LIST), 3)]
-        await update.message.reply_text(
-            "Выберите модуль:",
-            reply_markup=ReplyKeyboardMarkup(modules_keyboard, resize_keyboard=True)
-        )
-        return SELECT_MODULE
-
-
-async def send_version(update: Update, product_key: str, context: ContextTypes.DEFAULT_TYPE, project: str = None) -> None:
-
-    logging.info(f"Запрошена комбинация: {project } {product_key}")
-    safe_combination = f"{project } {product_key}"
-    if product_key == "версия отсутствует":
-        message = rf"*Комбинация:* {project } {product_key}\nВерсия отсутствует для выбранной комбинации\."
-        await update.message.reply_text(message, reply_markup=build_main_menu(update.effective_user.id), parse_mode="MarkdownV2")
-        return
-    product = PRODUCT_BUTTONS[project][product_key]
-    try:
-        parsed = parse_index(URL)
-        if product in parsed:
-            latest = parsed[product][-1]
-            now = (datetime.now() + timedelta(hours=3)).strftime('%Y-%m-%d %H:%M:%S')
-
-            # Экранируем только для Markdown (не для кодового блока)
-            distr_line = f'projectDistr="{product}-{latest}"'
-            code_block = f"```\n{distr_line}\n```"
-
-            # Экранируем timestamp
-            safe_timestamp = now.replace("-", r"\-").replace(":", r"\:")
-
-            message = (
-                rf"*Комбинация:* {safe_combination}"
-                f"{code_block}\n\n"
-                rf"\(актуально на {safe_timestamp} по МСК\)"
-            )
-        else:
-            message = rf"*Комбинация:* {safe_combination} Продукт {product} не найден на сервере\."
-
-        logging.info(f"Ответ бота: {message}")
-        await update.message.reply_text(message, reply_markup=build_main_menu(update.effective_user.id), parse_mode="MarkdownV2")
-
-    except Exception as e:
-        logging.exception("Ошибка при получении данных")
-        error_message = f"Ошибка при получении данных: {str(e)}"
-        await update.message.reply_text(error_message.replace(".", r"\."), reply_markup=build_main_menu(update.effective_user.id),
-                                        parse_mode="MarkdownV2")
-    finally:
-        context.user_data.clear()
-
-
-
-async def send_pom_version(update: Update, product: str, combination: str, use_tested_versions: bool, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logging.info(f"Запрошена комбинация POM для продукта: {product}")
-    if product not in POM_MODULES:
-        message = f"Комбинация: {combination}\n\nСборка POM не поддерживается для выбранного продукта."
-        await update.message.reply_text(message, reply_markup=build_main_menu(update.effective_user.id))
-        return
+async def send_pom_version(update: Update, context: ContextTypes.DEFAULT_TYPE, version_type: str):
+    project = context.user_data["project"]
+    combination = f"{project} POM"
+    use_tested_versions = version_type == "Прошедшие тестирование"
+    def escape_md(text: str) -> str:
+        escape_chars = r'_*[]()~`>#+-=|{}.!'
+        return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', str(text))
 
     await update.message.reply_text("Начинаю сбор информации, подождите, пожалуйста...")
     start_time = time.time()
@@ -443,7 +339,7 @@ async def send_pom_version(update: Update, product: str, combination: str, use_t
 
         # Обработка локальных модулей
         local_versions = []
-        for module in POM_MODULES[product]:
+        for module in POM_MODULES[project]:
             base_name = module.replace("engdb.", "", 1)
             version = None
 
@@ -460,7 +356,7 @@ async def send_pom_version(update: Update, product: str, combination: str, use_t
             local_versions.append(f"<{module}.version>{version}</{module}.version>")
 
         # Обработка сборочных модулей
-        build_config = POM_BUILD_MODULES.get(product, {})
+        build_config = POM_BUILD_MODULES.get(project, {})
         build_lines = ["<properties>", "    <!-- CORE VERSIONS -->"]
 
         # Общая функция обработки модулей
@@ -514,46 +410,72 @@ async def send_pom_version(update: Update, product: str, combination: str, use_t
             reply_markup=build_main_menu(update.effective_user.id),
             parse_mode="MarkdownV2"
         )
-
     except Exception as e:
-        error_msg = f"Ошибка: {str(e)}".replace(".", r"\.")
-        await update.message.reply_text(
-            error_msg,
-            reply_markup=build_main_menu(update.effective_user.id),
-            parse_mode="MarkdownV2"
-        )
+        await update.message.reply_text(f"Ошибка: {escape_md(str(e))}")
     finally:
         context.user_data.clear()
 
 
-def main() -> None:
-    logging.info("Запуск бота")
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+# Обработка подписки
+async def handle_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.effective_user.id
+    subs = load_subscriptions()
 
-    conv_handler = ConversationHandler(
+    if user_id in subs["users"]:
+        subs["users"].remove(user_id)
+        text = "❌ Вы отписались"
+    else:
+        subs["users"].append(user_id)
+        text = "✅ Вы подписались"
+
+    save_subscriptions(subs)
+    await update.message.reply_text(text, reply_markup=build_main_menu(user_id))
+    return MAIN_MENU
+
+
+def main() -> None:
+    application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
+    add_release_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Text(["Добавить релиз"]), add_release_start)],
+        states={
+            ADD_RELEASE_MODULE: [MessageHandler(filters.TEXT, add_release_module)],
+            ADD_RELEASE_VERSION: [MessageHandler(filters.TEXT, add_release_version)],
+            ADD_RELEASE_DESCRIPTION: [
+                MessageHandler(filters.TEXT, add_release_description),
+                CommandHandler("skip", skip_description),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        map_to_parent={MAIN_MENU: MAIN_MENU},
+    )
+
+    get_version_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Text(["Получить"]), get_version_start)],
+        states={
+            GET_PROJECT: [MessageHandler(filters.TEXT, get_project)],
+            GET_BUILD_TYPE: [MessageHandler(filters.TEXT, get_build_type)],
+            GET_VERSION_TYPE: [MessageHandler(filters.TEXT, get_version_type)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        map_to_parent={MAIN_MENU: MAIN_MENU},
+    )
+
+    main_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            CHOOSE_ACTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, choose_action)],
-            SELECT_MODULE: [MessageHandler(filters.TEXT & ~filters.COMMAND, select_module)],
-            INPUT_VERSION: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_version)],
-            INPUT_DESCRIPTION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, input_description),
-                CommandHandler("skip", skip_description)
-            ],
-            CHOOSE_VERSION_TYPE: [
-                MessageHandler(filters.Text(["Прошедшие тестирование", "Новейшие"]), handle_choice)
+            MAIN_MENU: [
+                add_release_conv,
+                get_version_conv,
+                MessageHandler(filters.Text(["Подписаться", "Отписаться"]), handle_subscription),
             ]
         },
-        fallbacks=[CommandHandler("start", start)]
+        fallbacks=[CommandHandler("start", start)],
     )
-    app.add_handler(MessageHandler(
-        filters.Text(["Подписаться на рассылку", "Отписаться от рассылки"]),
-        toggle_subscription
-    ))
-    app.add_handler(conv_handler)
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_choice))
 
-    app.run_polling()
+    application.add_handler(main_handler)
+    application.run_polling()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
