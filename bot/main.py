@@ -48,10 +48,11 @@ logging.basicConfig(
     ADD_RELEASE_MODULE,
     ADD_RELEASE_VERSION,
     ADD_RELEASE_DESCRIPTION,
+    ADD_RELEASE_TYPE,  # Новое состояние
     GET_PROJECT,
     GET_BUILD_TYPE,
     GET_VERSION_TYPE,
-) = range(7)
+) = range(8)
 
 
 def get_user_info(user: User) -> str:
@@ -72,9 +73,13 @@ def load_releases() -> list:
 
 
 def save_releases(data: list) -> None:
-    unique = {item["module"]: item for item in data}
+    # Используем кортеж (module, version_type) как уникальный ключ
+    unique_entries = {}
+    for item in data:
+        key = (item["module"], item["version_type"])
+        unique_entries[key] = item
     with open(RELEASES_JSON_PATH, "w", encoding="utf-8") as f:
-        json.dump(list(unique.values()), f, ensure_ascii=False, indent=2)
+        json.dump(list(unique_entries.values()), f, ensure_ascii=False, indent=2)
 
 
 def load_subscriptions() -> dict:
@@ -152,28 +157,59 @@ async def add_release_version(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def add_release_description(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    description = update.message.text
-    context.user_data["description"] = description
-
-    release_data = {
-        "module": context.user_data["module"],
-        "version": context.user_data["version"],
-        "description": description,
-        "timestamp": (datetime.now() + timedelta(hours=3)).strftime('%Y-%m-%d %H:%M:%S'),
-        "user": get_user_info(update.effective_user),
-    }
-
-    releases = load_releases()
-    releases.append(release_data)
-    save_releases(releases)
-
-    await notify_subscribers(context.bot, release_data)
+    context.user_data["description"] = update.message.text
+    keyboard = [["Допущен к установке", "Допущен к тестированию"]]
     await update.message.reply_text(
-        "✅ Релиз добавлен!", reply_markup=build_main_menu(update.effective_user.id)
+        "Выберите тип релиза:",
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+    return ADD_RELEASE_TYPE
+
+
+async def add_release_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    version_type = update.message.text
+    if version_type not in ["Допущен к установке", "Допущен к тестированию"]:
+        await update.message.reply_text("Неверный тип. Выберите из списка.")
+        return ADD_RELEASE_TYPE
+
+    # Получаем нормализованный тип версии
+    normalized_type = version_type.split()[-1].lower()  # "установке" или "тестированию"
+
+    # Проверяем существование версии такого типа
+    releases = load_releases()
+    existing = next(
+        (item for item in releases
+         if item["module"] == context.user_data["module"]
+         and item["version_type"] == normalized_type),
+        None
+    )
+
+    # Обновляем или добавляем запись
+    if existing:
+        existing.update({
+            "version": context.user_data["version"],
+            "description": context.user_data.get("description", ""),
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "user": get_user_info(update.effective_user)
+        })
+    else:
+        releases.append({
+            "module": context.user_data["module"],
+            "version": context.user_data["version"],
+            "description": context.user_data.get("description", ""),
+            "version_type": normalized_type,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "user": get_user_info(update.effective_user)
+        })
+
+    save_releases(releases)
+    await notify_subscribers(context.bot, releases[-1])
+
+    await update.message.reply_text(
+        "✅ Релиз добавлен!",
+        reply_markup=build_main_menu(update.effective_user.id)
     )
     context.user_data.clear()
     return MAIN_MENU
-
 
 async def skip_description(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["description"] = ""
@@ -181,11 +217,12 @@ async def skip_description(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 async def notify_subscribers(bot, data: dict):
+    version_type = "к установке" if data["version_type"] == "установке" else "к тестированию"
     message = (
-        f"🚀 Новый релиз {data['module']} v{data['version']}\n"
+        f"🚀 Новый релиз {data['module']} v{data['version']} ({version_type})\n"
         f"📅 {data['timestamp']}\n👤 {data['user']}\n"
     )
-    if data["description"]:
+    if data["description"] != "/skip":
         message += f"📝 {data['description']}"
 
     subs = load_subscriptions()
@@ -221,7 +258,11 @@ async def get_build_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return GET_BUILD_TYPE
 
     if build_type == "POM":
-        keyboard = ReplyKeyboardMarkup([["Прошедшие тестирование", "Новейшие"]], resize_keyboard=True)
+        # В диалоге выбора сборки (GET_BUILD_TYPE) изменить клавиатуру:
+        keyboard = ReplyKeyboardMarkup(
+            [["Допущено к установке", "Допущено к тестированию", "Новейший релиз"]],
+            resize_keyboard=True
+        )
         await update.message.reply_text("Выберите тип версий:", reply_markup=keyboard)
         return GET_VERSION_TYPE
 
@@ -231,7 +272,7 @@ async def get_build_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def get_version_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     version_type = update.message.text
-    if version_type not in ["Прошедшие тестирование", "Новейшие"]:
+    if version_type not in ["Допущено к установке", "Допущено к тестированию", "Новейший релиз"]:
         await update.message.reply_text("Неверный тип. Выберите из списка.")
         return GET_VERSION_TYPE
 
@@ -318,7 +359,9 @@ def get_pom_url(module: str, build: bool = False) -> str:
 async def send_pom_version(update: Update, context: ContextTypes.DEFAULT_TYPE, version_type: str):
     project = context.user_data["project"]
     combination = f"{project} POM"
-    use_tested_versions = version_type == "Прошедшие тестирование"
+    use_tested_versions = version_type in ["Допущено к установке", "Допущено к тестированию"]
+    is_latest = version_type == "Новейший релиз"
+
     def escape_md(text: str) -> str:
         escape_chars = r'_*[]()~`>#+-=|{}.!'
         return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', str(text))
@@ -327,82 +370,85 @@ async def send_pom_version(update: Update, context: ContextTypes.DEFAULT_TYPE, v
     start_time = time.time()
 
     try:
-        releases = load_releases() if use_tested_versions else []
+        # Определяем тип фильтрации
+        version_filter = None
+        if version_type == "Допущено к установке":
+            version_filter = "установке"
+        elif version_type == "Допущено к тестированию":
+            version_filter = "тестированию"
+
+        # Загрузка релизов только для разрешённых типов
+        releases = []
+        if use_tested_versions:
+            all_releases = load_releases()
+            releases = [r for r in all_releases if r.get("version_type") == version_filter]
+
         version_cache = {}
 
-        # Функция для получения версии из JSON
-        def get_tested_version(module_name):
-            module_entries = [r for r in releases if r['module'] == module_name]
-            if not module_entries:
-                return None
-            return max(module_entries, key=lambda x: Version(x['version']))['version']
+        # Функция для получения версии
+        def get_version(module_name: str) -> str:
+            if use_tested_versions:
+                module_entries = [r for r in releases if r['module'] == module_name]
+                if module_entries:
+                    return max(module_entries, key=lambda x: Version(x['version']))['version']
+            return None
 
         # Обработка локальных модулей
         local_versions = []
         for module in POM_MODULES[project]:
             base_name = module.replace("engdb.", "", 1)
-            version = None
+            version = get_version(base_name)
 
-            if use_tested_versions:
-                version = get_tested_version(base_name)
-                if not version:
-                    local_versions.append(f"<{module}.version>Версия не указана в БД</{module}.version>")
-                    continue
-
-            if not version:
+            if not version and not use_tested_versions:
+                # Парсим только для новейших версий
                 url = get_pom_url(module, build=False)
                 version = parse_pom_version(url) if url else "URL не задан"
 
-            local_versions.append(f"<{module}.version>{version}</{module}.version>")
+            safe_module = escape_md(module)
+            safe_version = escape_md(version) if version else "N/A"
+            local_versions.append(f"<{safe_module}.version>{safe_version}</{safe_module}.version>")
 
         # Обработка сборочных модулей
         build_config = POM_BUILD_MODULES.get(project, {})
         build_lines = ["<properties>", "    <!-- CORE VERSIONS -->"]
 
-        # Общая функция обработки модулей
-        def process_modules(module_list, section):
-            nonlocal build_lines
+        def process_modules(module_list):
             for module in module_list:
                 if module == "engdb.help.branch":
                     build_lines.append("    <engdb.help.branch>INSERT NAME</engdb.help.branch>")
                     continue
 
                 base_name = module.replace("engdb.", "", 1)
-                version = None
+                version = get_version(base_name)
 
-                if use_tested_versions:
-                    version = get_tested_version(base_name)
-                    if not version:
-                        build_lines.append(f"    <{module}.version>Версия не указана в БД</{module}.version>")
-                        continue
-
-                if not version:
+                if not version and not use_tested_versions:
                     url = get_pom_url(module, build=True)
                     version = parse_pom_version(url) if url else "URL не задан"
 
-                build_lines.append(f"    <{module}.version>{version}</{module}.version>")
+                safe_module = escape_md(module)
+                safe_version = escape_md(version) if version else "N/A"
+                build_lines.append(f"    <{safe_module}.version>{safe_version}</{safe_module}.version>")
 
-        process_modules(build_config.get("CORE", []), "CORE")
+        process_modules(build_config.get("CORE", []))
         build_lines.append("    <!-- MODULES VERSIONS -->")
-        process_modules(build_config.get("MODULES", []), "MODULES")
+        process_modules(build_config.get("MODULES", []))
         build_lines.append("</properties>")
 
         # Форматирование сообщения
         elapsed = time.time() - start_time
         now = (datetime.now() + timedelta(hours=3)).strftime('%Y-%m-%d %H:%M:%S')
 
-        safe_combination = combination.replace(".", r"\.").replace("-", r"\-")
-        safe_elapsed = f"{elapsed:.2f}".replace(".", r"\.")
-        safe_now = now.replace("-", r"\-").replace(":", r"\:")
+        safe_combination = escape_md(combination)
+        safe_elapsed = escape_md(f"{elapsed:.2f} сек")
+        safe_now = escape_md(now)
 
         message = (
-                f"*Комбинация:* {safe_combination}\n\n"
-                f"*Для локального pom:*\n```\n" + "\n".join(local_versions) + "\n```\n"
-                                                                              f"_Сбор информации заняла {safe_elapsed} секунд_\n"
-                                                                              f"\\(актуально на {safe_now} по МСК\\)\n\n"
-                                                                              f"*Для создания сборки:*\n```\n" + "\n".join(
-            build_lines) + "\n```\n"
-                           f"\\(актуально на {safe_now} по МСК\\)"
+            f"*Комбинация:* {safe_combination}\n\n"
+            f"*Тип версий:* {escape_md(version_type)}\n\n"
+            f"*Локальный pom:*\n```\n" + "\n".join(local_versions) + "\n```\n"
+            f"*Сборка:*\n```\n" + "\n".join(build_lines) + "\n```\n"
+            f"_Время обработки: {safe_elapsed}_\n"
+            f"\\(актуально на {safe_now} по МСК\\)"
         )
 
         await update.message.reply_text(
@@ -411,7 +457,8 @@ async def send_pom_version(update: Update, context: ContextTypes.DEFAULT_TYPE, v
             parse_mode="MarkdownV2"
         )
     except Exception as e:
-        await update.message.reply_text(f"Ошибка: {escape_md(str(e))}")
+        error_msg = escape_md(f"Ошибка: {str(e)}")
+        await update.message.reply_text(error_msg)
     finally:
         context.user_data.clear()
 
@@ -443,8 +490,9 @@ def main() -> None:
             ADD_RELEASE_VERSION: [MessageHandler(filters.TEXT, add_release_version)],
             ADD_RELEASE_DESCRIPTION: [
                 MessageHandler(filters.TEXT, add_release_description),
-                CommandHandler("skip", skip_description),
+                CommandHandler("skip", skip_description)
             ],
+            ADD_RELEASE_TYPE: [MessageHandler(filters.TEXT, add_release_type)]  # Новое состояние
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         map_to_parent={MAIN_MENU: MAIN_MENU},
