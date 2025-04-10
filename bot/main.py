@@ -1,4 +1,3 @@
-import asyncio
 import json
 import os
 import re
@@ -31,7 +30,6 @@ from config import (
     SUBSCRIPTIONS_JSON_PATH,
 )
 
-# Настройка логирования
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG_FILE_PATH = os.path.join(BASE_DIR, "bot.log")
 logging.basicConfig(
@@ -42,13 +40,12 @@ logging.basicConfig(
     encoding="utf-8",
 )
 
-# Состояния
 (
     MAIN_MENU,
     ADD_RELEASE_MODULE,
     ADD_RELEASE_VERSION,
     ADD_RELEASE_DESCRIPTION,
-    ADD_RELEASE_TYPE,  # Новое состояние
+    ADD_RELEASE_TYPE,
     GET_PROJECT,
     GET_BUILD_TYPE,
     GET_VERSION_TYPE,
@@ -73,7 +70,6 @@ def load_releases() -> list:
 
 
 def save_releases(data: list) -> None:
-    # Используем кортеж (module, version_type) как уникальный ключ
     unique_entries = {}
     for item in data:
         key = (item["module"], item["version_type"])
@@ -99,12 +95,13 @@ def build_main_menu(user_id: int) -> ReplyKeyboardMarkup:
     subs = load_subscriptions()
     sub_button = "Отписаться" if user_id in subs["users"] else "Подписаться"
     return ReplyKeyboardMarkup(
-        [["Добавить релиз", "Получить"], [sub_button]], resize_keyboard=True
+        [["Добавить релиз", "Получить"], [sub_button]],
+        resize_keyboard=True
     )
 
 
 def build_keyboard(items: list, cols: int = 3) -> ReplyKeyboardMarkup:
-    rows = [items[i: i + cols] for i in range(0, len(items), cols)]
+    rows = [items[i:i + cols] for i in range(0, len(items), cols)]
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
@@ -121,14 +118,16 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return await start(update, context)
 
 
-# Блок добавления релиза
 async def add_release_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    keyboard = build_keyboard(MODULES_LIST)
+    keyboard = build_keyboard_with_home(MODULES_LIST)
     await update.message.reply_text("Выберите модуль:", reply_markup=keyboard)
     return ADD_RELEASE_MODULE
 
 
 async def add_release_module(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.message.text == "🏠 Домой":
+        return await home(update, context)
+
     module = update.message.text
     if module not in MODULES_LIST:
         await update.message.reply_text("Неверный модуль. Выберите из списка.")
@@ -137,12 +136,15 @@ async def add_release_module(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data["module"] = module
     await update.message.reply_text(
         "Введите версию в формате X.Y.Z:\n❗ Убедитесь в корректности версии!",
-        reply_markup=ReplyKeyboardMarkup([["/cancel"]], resize_keyboard=True),
+        reply_markup=ReplyKeyboardMarkup([["🏠 Домой"]], resize_keyboard=True),
     )
     return ADD_RELEASE_VERSION
 
 
 async def add_release_version(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.message.text == "🏠 Домой":
+        return await home(update, context)
+
     version = update.message.text.strip()
     if not re.match(r"^\d+(\.\d+){1,3}$", version):
         await update.message.reply_text("❌ Неверный формат! Попробуйте снова.")
@@ -151,17 +153,26 @@ async def add_release_version(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data["version"] = version
     await update.message.reply_text(
         "Введите описание (или /skip):",
-        reply_markup=ReplyKeyboardMarkup([["/skip", "/cancel"]], resize_keyboard=True),
+        reply_markup=ReplyKeyboardMarkup(
+            [["🏠 Домой"], ["/skip"]], resize_keyboard=True
+        ),
     )
     return ADD_RELEASE_DESCRIPTION
 
 
 async def add_release_description(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.message.text == "🏠 Домой":
+        return await home(update, context)
+
     context.user_data["description"] = update.message.text
-    keyboard = [["Допущен к установке", "Допущен к тестированию"]]
+    keyboard = [
+        ["🏠 Домой"],
+        ["Допущен к установке", "Допущен к тестированию"]
+    ]
     await update.message.reply_text(
         "Выберите тип релиза:",
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    )
     return ADD_RELEASE_TYPE
 
 
@@ -171,10 +182,7 @@ async def add_release_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await update.message.reply_text("Неверный тип. Выберите из списка.")
         return ADD_RELEASE_TYPE
 
-    # Получаем нормализованный тип версии
-    normalized_type = version_type.split()[-1].lower()  # "установке" или "тестированию"
-
-    # Проверяем существование версии такого типа
+    normalized_type = version_type.split()[-1].lower()
     releases = load_releases()
     existing = next(
         (item for item in releases
@@ -183,7 +191,6 @@ async def add_release_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         None
     )
 
-    # Обновляем или добавляем запись
     if existing:
         existing.update({
             "version": context.user_data["version"],
@@ -211,6 +218,7 @@ async def add_release_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     context.user_data.clear()
     return MAIN_MENU
 
+
 async def skip_description(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["description"] = ""
     return await add_release_description(update, context)
@@ -230,26 +238,43 @@ async def notify_subscribers(bot, data: dict):
         await bot.send_message(chat_id=user_id, text=message)
 
 
-# Блок получения версий
 async def get_version_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    keyboard = build_keyboard(list(PRODUCT_BUTTONS.keys()))
+    keyboard = build_keyboard_with_home(list(PRODUCT_BUTTONS.keys()))
     await update.message.reply_text("Выберите проект:", reply_markup=keyboard)
     return GET_PROJECT
 
 
 async def get_project(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.message.text == "🏠 Домой":
+        return await home(update, context)
+
     project = update.message.text
     if project not in PRODUCT_BUTTONS:
         await update.message.reply_text("Неверный проект. Выберите из списка.")
         return GET_PROJECT
 
     context.user_data["project"] = project
-    keyboard = build_keyboard(list(PRODUCT_BUTTONS[project].keys()))
+    keyboard = build_keyboard_with_home(list(PRODUCT_BUTTONS[project].keys()))
     await update.message.reply_text("Выберите сборку:", reply_markup=keyboard)
     return GET_BUILD_TYPE
 
 
+async def home(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.clear()
+    await update.message.reply_text("🏠 Возвращаемся в главное меню")
+    return await start(update, context)
+
+
+def build_keyboard_with_home(items: list, cols: int = 3) -> ReplyKeyboardMarkup:
+    rows = [["🏠 Домой"]]
+    rows += [items[i:i+cols] for i in range(0, len(items), cols)]
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+
 async def get_build_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if update.message.text == "🏠 Домой":
+        return await home(update, context)
+
     build_type = update.message.text
     project = context.user_data["project"]
 
@@ -258,9 +283,12 @@ async def get_build_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return GET_BUILD_TYPE
 
     if build_type == "POM":
-        # В диалоге выбора сборки (GET_BUILD_TYPE) изменить клавиатуру:
         keyboard = ReplyKeyboardMarkup(
-            [["Допущено к установке", "Допущено к тестированию", "Новейший релиз"]],
+            [
+                ["🏠 Домой"],
+                ["Допущено к установке", "Допущено к тестированию"],
+                ["Новейший релиз"]
+            ],
             resize_keyboard=True
         )
         await update.message.reply_text("Выберите тип версий:", reply_markup=keyboard)
@@ -316,7 +344,6 @@ async def send_version(update: Update, context: ContextTypes.DEFAULT_TYPE, build
             latest = parsed[product][-1]
             timestamp = (datetime.now() + timedelta(hours=3)).strftime('%Y-%m-%d %H:%M:%S')
 
-            # Экранируем специальные символы
             safe_combination = re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', combination)
             safe_product = re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', product)
             safe_latest = re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', str(latest))
@@ -324,7 +351,7 @@ async def send_version(update: Update, context: ContextTypes.DEFAULT_TYPE, build
 
             message = (
                 rf"*Комбинация:* {safe_combination}"
-                rf"```\nprojectDistr=\"{safe_product}-{safe_latest}\"```"
+                rf"```\projectDistr=\"{safe_product}-{safe_latest}\"```"
                 rf"\(актуально на {safe_timestamp} по МСК\)"
             )
         else:
@@ -341,26 +368,42 @@ async def send_version(update: Update, context: ContextTypes.DEFAULT_TYPE, build
     finally:
         context.user_data.clear()
 
+
 def get_pom_url(module: str, build: bool = False) -> str:
-    """
-    Возвращает URL для получения версии модуля.
-    Ссылки для локального и сборочного pom одинаковые.
-    Если build=True и имя модуля начинается с "engdb.", удаляем этот префикс для поиска URL.
-    """
-    if build:
-        if module.startswith("engdb."):
-            base = module[len("engdb."):]
-            return UNIFIED_POM_URLS.get(base)
-        else:
-            return UNIFIED_POM_URLS.get(module)
-    else:
-        return UNIFIED_POM_URLS.get(module)
+    if build and module.startswith("engdb."):
+        base = module[len("engdb."):]
+        return UNIFIED_POM_URLS.get(base)
+    return UNIFIED_POM_URLS.get(module)
+
 
 async def send_pom_version(update: Update, context: ContextTypes.DEFAULT_TYPE, version_type: str):
-    project = context.user_data["project"]
+    # Проверяем наличие проекта в user_data
+    project = context.user_data.get("project")
+    if not project:
+        await update.message.reply_text("Проект не указан",
+            reply_markup=build_main_menu(update.effective_user.id),
+            parse_mode="MarkdownV2")
+        context.user_data.clear()
+        return
+
+    # Проверяем существование проекта в POM_MODULES
+    if project not in POM_MODULES:
+        await update.message.reply_text(f"Для проекта {project} отсутствуют модули",
+            reply_markup=build_main_menu(update.effective_user.id),
+            parse_mode="MarkdownV2")
+        context.user_data.clear()
+        return
+
+    # Проверяем, что список модулей проекта не пуст
+    if not POM_MODULES[project]:
+        await update.message.reply_text(f"Для проекта {project} отсутствуют модули",
+            reply_markup=build_main_menu(update.effective_user.id),
+            parse_mode="MarkdownV2")
+        context.user_data.clear()
+        return
+
     combination = f"{project} POM"
     use_tested_versions = version_type in ["Допущено к установке", "Допущено к тестированию"]
-    is_latest = version_type == "Новейший релиз"
 
     def escape_md(text: str) -> str:
         escape_chars = r'_*[]()~`>#+-=|{}.!'
@@ -370,22 +413,17 @@ async def send_pom_version(update: Update, context: ContextTypes.DEFAULT_TYPE, v
     start_time = time.time()
 
     try:
-        # Определяем тип фильтрации
         version_filter = None
         if version_type == "Допущено к установке":
             version_filter = "установке"
         elif version_type == "Допущено к тестированию":
             version_filter = "тестированию"
 
-        # Загрузка релизов только для разрешённых типов
         releases = []
         if use_tested_versions:
             all_releases = load_releases()
             releases = [r for r in all_releases if r.get("version_type") == version_filter]
 
-        version_cache = {}
-
-        # Функция для получения версии
         def get_version(module_name: str) -> str:
             if use_tested_versions:
                 module_entries = [r for r in releases if r['module'] == module_name]
@@ -393,14 +431,12 @@ async def send_pom_version(update: Update, context: ContextTypes.DEFAULT_TYPE, v
                     return max(module_entries, key=lambda x: Version(x['version']))['version']
             return None
 
-        # Обработка локальных модулей
         local_versions = []
         for module in POM_MODULES[project]:
             base_name = module.replace("engdb.", "", 1)
             version = get_version(base_name)
 
             if not version and not use_tested_versions:
-                # Парсим только для новейших версий
                 url = get_pom_url(module, build=False)
                 version = parse_pom_version(url) if url else "URL не задан"
 
@@ -408,7 +444,6 @@ async def send_pom_version(update: Update, context: ContextTypes.DEFAULT_TYPE, v
             safe_version = escape_md(version) if version else "N/A"
             local_versions.append(f"<{safe_module}.version>{safe_version}</{safe_module}.version>")
 
-        # Обработка сборочных модулей
         build_config = POM_BUILD_MODULES.get(project, {})
         build_lines = ["<properties>", "    <!-- CORE VERSIONS -->"]
 
@@ -434,7 +469,6 @@ async def send_pom_version(update: Update, context: ContextTypes.DEFAULT_TYPE, v
         process_modules(build_config.get("MODULES", []))
         build_lines.append("</properties>")
 
-        # Форматирование сообщения
         elapsed = time.time() - start_time
         now = (datetime.now() + timedelta(hours=3)).strftime('%Y-%m-%d %H:%M:%S')
 
@@ -457,13 +491,12 @@ async def send_pom_version(update: Update, context: ContextTypes.DEFAULT_TYPE, v
             parse_mode="MarkdownV2"
         )
     except Exception as e:
-        error_msg = escape_md(f"Ошибка: {str(e)}")
+        error_msg = escape_md(f"Ошибка: {str(e.with_traceback())}")
         await update.message.reply_text(error_msg)
     finally:
         context.user_data.clear()
 
 
-# Обработка подписки
 async def handle_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     subs = load_subscriptions()
@@ -486,26 +519,45 @@ def main() -> None:
     add_release_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Text(["Добавить релиз"]), add_release_start)],
         states={
-            ADD_RELEASE_MODULE: [MessageHandler(filters.TEXT, add_release_module)],
-            ADD_RELEASE_VERSION: [MessageHandler(filters.TEXT, add_release_version)],
-            ADD_RELEASE_DESCRIPTION: [
-                MessageHandler(filters.TEXT, add_release_description),
-                CommandHandler("skip", skip_description)
+            ADD_RELEASE_MODULE: [
+                MessageHandler(filters.TEXT & ~filters.Text(["🏠 Домой"]), add_release_module),
+                MessageHandler(filters.Text(["🏠 Домой"]), home)
             ],
-            ADD_RELEASE_TYPE: [MessageHandler(filters.TEXT, add_release_type)]  # Новое состояние
+            ADD_RELEASE_VERSION: [
+                MessageHandler(filters.TEXT & ~filters.Text(["🏠 Домой"]), add_release_version),
+                MessageHandler(filters.Text(["🏠 Домой"]), home)
+            ],
+            ADD_RELEASE_DESCRIPTION: [
+                MessageHandler(filters.TEXT & ~filters.Text(["/skip", "🏠 Домой"]), add_release_description),
+                CommandHandler("skip", skip_description),
+                MessageHandler(filters.Text(["🏠 Домой"]), home)
+            ],
+            ADD_RELEASE_TYPE: [
+                MessageHandler(filters.TEXT & ~filters.Text(["🏠 Домой"]), add_release_type),
+                MessageHandler(filters.Text(["🏠 Домой"]), home)
+            ]
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[CommandHandler("cancel", home)],
         map_to_parent={MAIN_MENU: MAIN_MENU},
     )
 
     get_version_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Text(["Получить"]), get_version_start)],
         states={
-            GET_PROJECT: [MessageHandler(filters.TEXT, get_project)],
-            GET_BUILD_TYPE: [MessageHandler(filters.TEXT, get_build_type)],
-            GET_VERSION_TYPE: [MessageHandler(filters.TEXT, get_version_type)],
+            GET_PROJECT: [
+                MessageHandler(filters.TEXT & ~filters.Text(["🏠 Домой"]), get_project),
+                MessageHandler(filters.Text(["🏠 Домой"]), home)
+            ],
+            GET_BUILD_TYPE: [
+                MessageHandler(filters.TEXT & ~filters.Text(["🏠 Домой"]), get_build_type),
+                MessageHandler(filters.Text(["🏠 Домой"]), home)
+            ],
+            GET_VERSION_TYPE: [
+                MessageHandler(filters.TEXT & ~filters.Text(["🏠 Домой"]), get_version_type),
+                MessageHandler(filters.Text(["🏠 Домой"]), home)
+            ],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[CommandHandler("cancel", home)],
         map_to_parent={MAIN_MENU: MAIN_MENU},
     )
 
