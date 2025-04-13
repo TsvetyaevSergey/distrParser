@@ -190,7 +190,6 @@ async def add_release_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
          and item["version_type"] == normalized_type),
         None
     )
-
     if existing:
         existing.update({
             "version": context.user_data["version"],
@@ -207,9 +206,16 @@ async def add_release_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "user": get_user_info(update.effective_user)
         })
-
+    notify = {
+            "module": context.user_data["module"],
+            "version": context.user_data["version"],
+            "description": context.user_data.get("description", ""),
+            "version_type": normalized_type,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "user": get_user_info(update.effective_user)
+        }
     save_releases(releases)
-    await notify_subscribers(context.bot, releases[-1])
+    await notify_subscribers(context.bot, notify)
 
     await update.message.reply_text(
         "✅ Релиз добавлен!",
